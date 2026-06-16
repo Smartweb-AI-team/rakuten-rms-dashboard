@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "広告ダッシュボード Cookieブリッジ",
+  "version": "0.1.0",
+  "description": "楽天RMSのログインCookie（XSRF-TOKEN含む）をローカルの広告ダッシュボードへ安全に送信します。",
+  "permissions": ["cookies"],
+  "host_permissions": [
+    "*://*.rakuten.co.jp/*",
+    "http://127.0.0.1:8765/*",
+    "http://localhost:8765/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Cookie送信"
+  },
+  "background": { "service_worker": "background.js" }
+}

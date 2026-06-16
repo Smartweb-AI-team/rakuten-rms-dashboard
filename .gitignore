@@ -1,0 +1,49 @@
+# --- 시크릿 / 민감 ---
+config.json
+session_cookies.json
+storage_state.json
+.env
+.env.local
+.env.*.local
+
+# --- DB ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+rms_ads.lock.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node (확장 빌드 시) ---
+node_modules/
+dist/
+.cache/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# --- Vercel ---
+.vercel/
+
+# --- 데이터 캐시 ---
+data/
+downloads/
+*.csv
+*.zip

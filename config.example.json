@@ -1,0 +1,11 @@
+{
+  "shop_id": "YOUR_SHOP_ID",
+  "db_path": "rms_ads.db",
+  "storage_state_path": "storage_state.json",
+  "lookback_days": 14,
+  "host": "127.0.0.1",
+  "port": 8765,
+  "_comment_db_path": "ローカル: SQLite ファイルパス (Google Drive Desktop の同期フォルダを指定すると自動共有)。本番(Vercel): 環境変数 DATABASE_URL (Supabase Postgres) を設定するとこの項目は無視されます。",
+  "sku_categories": {},
+  "collector_label": ""
+}

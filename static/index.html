@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>広告ダッシュボード · 楽天RMS</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+</head>
+<body>
+<div id="app">
+
+  <!-- サイドバー -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">AD</div>
+      <div>
+        <div class="brand-name">広告ダッシュボード</div>
+        <div class="brand-sub">楽天RMS アナリティクス</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="nav-group-label">分析</div>
+      <button class="nav-item active" data-view="dashboard"><span>📊</span> ダッシュボード</button>
+      <button class="nav-item" data-view="analysis"><span>🔍</span> 商品ｘキーワード</button>
+      <button class="nav-item" data-view="report"><span>📄</span> レポート</button>
+      <div class="nav-group-label">管理</div>
+      <button class="nav-item" data-view="collect"><span>📥</span> データ取得</button>
+    </nav>
+    <div class="sidebar-foot">
+      <button id="btn-settings" class="ghost-btn">⚙️ 設定</button>
+      <div class="ver">v0.1 · local</div>
+    </div>
+  </aside>
+
+  <!-- メイン -->
+  <main class="main">
+    <header class="topbar">
+      <div id="view-title" class="view-title">ダッシュボード</div>
+      <div class="status-cluster">
+        <span class="pill unit-btn" id="btn-unit" title="通貨単位の切替">¥</span>
+        <span class="pill" id="pill-shop">店舗 —</span>
+        <span class="pill" id="pill-session" title="楽天セッションの状態">● セッション確認中</span>
+      </div>
+    </header>
+
+    <!-- ============ 取得ビュー ============ -->
+    <section class="view hidden" id="view-collect">
+      <div class="grid-2">
+        <div class="card">
+          <h3>データ取得</h3>
+          <p class="muted">日付を選んでボタンを押すと、楽天RMSからその日のRPP（全体・キャンペーン・商品・キーワード）/ CPA / TDA データを取得しDBに保存します。</p>
+
+          <div class="seg">
+            <button class="seg-btn active" data-mode="day">単日</button>
+            <button class="seg-btn" data-mode="range">期間</button>
+          </div>
+
+          <div class="field-row" id="field-day">
+            <label>日付</label>
+            <input type="text" id="in-day" data-dp="day">
+            <div class="quick">
+              <button class="chip" data-q="yesterday">昨日</button>
+              <button class="chip" data-q="d2">一昨日</button>
+              <button class="chip" data-q="d7">7日前</button>
+            </div>
+          </div>
+
+          <div class="field-row hidden" id="field-range">
+            <label>開始</label><input type="text" id="in-from" data-dp="day">
+            <label>終了</label><input type="text" id="in-to" data-dp="day">
+            <span class="muted small" id="range-hint"></span>
+          </div>
+
+          <label class="check"><input type="checkbox" id="chk-sample"> サンプルモード（ログインなしでダミーデータでUIを確認）</label>
+
+          <button class="primary big" id="btn-collect">📥 このデータを取得</button>
+          <div id="collect-result" class="result-box hidden"></div>
+        </div>
+
+        <div class="card">
+          <h3>取得状況</h3>
+          <div class="bounds" id="bounds-box"><span class="muted">読み込み中…</span></div>
+          <div class="coverage-head">
+            <span>日付別の取得行数（直近）</span>
+            <button class="ghost-btn small" id="btn-refresh-cov">↻ 更新</button>
+          </div>
+          <div class="coverage-list" id="coverage-list"></div>
+        </div>
+      </div>
+
+      <div class="card hidden" id="jobs-panel"></div>
+
+      <div class="card">
+        <h3>期間一括取得 <span class="muted small">過去データをまとめて取得</span></h3>
+        <p class="muted">月単位で順に取得します。楽天は<b>約4年（48ヶ月）より前のデータを提供しない</b>ため、それ以前の期間は自動でスキップされます。（この上限は時間とともに繰り上がるため、今取得しておくと永久に保存できます。）</p>
+        <div class="field-row">
+          <label>開始月</label><input type="text" id="bf-from" data-dp="month">
+          <label>終了月</label><input type="text" id="bf-to" data-dp="month">
+          <button class="primary" id="btn-backfill">一括取得を開始</button>
+          <button class="ghost-btn" id="btn-backfill-cancel" style="display:none">キャンセル</button>
+        </div>
+        <p class="muted small" style="margin:6px 0 0">初期値は取得可能な最大範囲（約4年）に設定されています。そのまま<b>「一括取得を開始」</b>を押すだけでOKです。</p>
+        <div class="field-row" style="margin-top:12px;border-top:1px dashed var(--line);padding-top:12px">
+          <span class="small muted">取得漏れの日付だけを再取得（取得可能な期間のみ・上限超過分は除外）：</span>
+          <button class="ghost-btn" id="btn-refill">取得漏れを補完</button>
+        </div>
+        <div id="bf-progress" class="hidden">
+          <div class="bar"><div class="bar-fill" id="bf-bar"></div></div>
+          <div class="small" id="bf-status" style="margin:6px 0;font-weight:600"></div>
+          <div id="bf-totals" class="bf-totals"></div>
+          <div id="bf-reasons"></div>
+          <div class="bf-log" id="bf-log"></div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ============ ダッシュボードビュー ============ -->
+    <section class="view" id="view-dashboard">
+      <div class="filters card" id="dash-filters"></div>
+      <div id="kpi-caption" class="kpi-caption muted small"></div>
+      <div class="kpi-row" id="kpi-row"></div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <div style="display:flex;align-items:center;gap:14px">
+              <h3 style="margin:0">推移</h3>
+              <div class="seg small" id="granularity-toggle">
+                <button class="seg-btn active" data-gran="day">日次</button>
+                <button class="seg-btn" data-gran="month">月次</button>
+              </div>
+            </div>
+            <div class="seg small" id="metric-toggle">
+              <button class="seg-btn active" data-metric="ad_cost">広告費</button>
+              <button class="seg-btn" data-metric="gms">売上</button>
+              <button class="seg-btn" data-metric="roas">ROAS</button>
+              <button class="seg-btn" data-metric="clicks">クリック</button>
+            </div>
+          </div>
+          <div class="chart-wrap"><canvas id="trend-chart" height="240"></canvas><div class="chart-tip" id="chart-tip"></div></div>
+        </div>
+        <div class="card">
+          <h3>インサイト</h3>
+          <div id="insight-headline" class="insight-headline"></div>
+          <ul id="insight-bullets" class="insight-bullets"></ul>
+          <div id="insight-actions"></div>
+          <div class="note" id="insight-note"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>キャンペーン変動 <span class="muted small">前期間比</span></h3></div>
+        <div class="table-wrap"><table id="movers-table"></table></div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h3>TOP 商品</h3>
+            <div class="tbl-tools"><input type="text" id="search-item" placeholder="🔍 商品を検索"></div>
+          </div>
+          <div class="table-wrap"><table id="top-item-table"></table></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>TOP キーワード</h3>
+            <div class="tbl-tools"><input type="text" id="search-kw" placeholder="🔍 キーワードを検索"></div>
+          </div>
+          <div class="table-wrap"><table id="top-kw-table"></table></div>
+        </div>
+      </div>
+
+      <!-- 詳細データ（統合） -->
+      <div class="card" id="detail-card">
+        <div class="card-head">
+          <h3>詳細データ <span class="muted small" id="detail-count"></span></h3>
+          <div class="tbl-tools">
+            <select id="detail-sel" title="表示単位">
+              <option value="1">全体</option><option value="2">キャンペーン別</option>
+              <option value="3" selected>商品別</option><option value="4">キーワード別</option>
+            </select>
+            <input type="text" id="detail-search" placeholder="🔍 部分検索">
+            <button class="ghost-btn small" id="btn-csv">⤓ CSV出力</button>
+          </div>
+        </div>
+        <div id="detail-chip" class="chip-row"></div>
+        <div id="detail-chart-box" class="hidden">
+          <div class="card-head" style="margin:4px 0 8px">
+            <div class="small muted" id="detail-chart-title"></div>
+            <div class="seg small" id="detail-metric">
+              <button class="seg-btn active" data-metric="ad_cost">広告費</button>
+              <button class="seg-btn" data-metric="gms">売上</button>
+              <button class="seg-btn" data-metric="roas">ROAS</button>
+              <button class="seg-btn" data-metric="clicks">クリック</button>
+            </div>
+          </div>
+          <div class="chart-wrap"><canvas id="detail-chart" height="200"></canvas></div>
+        </div>
+        <div class="table-wrap"><table id="detail-table"></table></div>
+      </div>
+    </section>
+
+    <!-- ============ 統合: 商品ｘキーワード ============ -->
+    <section class="view hidden" id="view-analysis">
+      <div class="seg sub-tabs" id="analysis-tabs">
+        <button class="seg-btn active" data-sub="board">商品・キーワード</button>
+        <button class="seg-btn" data-sub="matrix">商品ｘキーワード</button>
+        <button class="seg-btn" data-sub="compare">期間比較</button>
+      </div>
+      <div id="sub-board"></div>
+      <div id="sub-matrix" class="hidden"></div>
+      <div id="sub-compare" class="hidden"></div>
+    </section>
+
+    <!-- ============ (旧) 商品分析 — 統合ビューにDOM移植用 ============ -->
+    <section class="view hidden" id="view-product">
+      <div class="filters card" id="prod-filters"></div>
+      <div class="card">
+        <div class="card-head"><h3>商品・キーワード <span class="muted small">行をクリックで選択（複数可）→ 下で推移・比較</span></h3>
+          <div class="tbl-tools">
+            <select id="prod-kind"><option value="3">商品(SKU)</option><option value="4">キーワード</option></select>
+            <label class="switch" id="prod-pure-toggle" title="商品別広告 − キーワード合算 = 外部漏出（純粋商品CPC）。検索キーワード経由以外（推薦・関連商品・カテゴリ等）で発生したトラフィック。"><input type="checkbox" id="prod-pure"><span class="switch-track"><span class="switch-thumb"></span></span><span class="switch-lab">📡 外部漏出を表示</span></label>
+            <input type="text" id="prod-search" placeholder="🔍 検索">
+            <button class="ghost-btn small" id="prod-clear">選択クリア</button>
+          </div>
+        </div>
+        <div id="prod-cap" class="muted small" style="margin-bottom:8px"></div>
+        <div class="table-wrap"><table id="prod-board"></table></div>
+      </div>
+      <div id="prod-result" class="hidden">
+        <div class="kpi-row" id="prod-kpi"></div>
+        <div class="card">
+          <div class="card-head"><h3 id="prod-title">推移</h3>
+            <div class="seg small" id="prod-metric">
+              <button class="seg-btn active" data-metric="ad_cost">広告費</button>
+              <button class="seg-btn" data-metric="gms">売上</button>
+              <button class="seg-btn" data-metric="roas">ROAS</button>
+              <button class="seg-btn" data-metric="clicks">クリック</button>
+            </div>
+          </div>
+          <div class="chart-wrap"><canvas id="prod-chart" height="240"></canvas></div>
+          <div class="muted small" id="prod-legend" style="margin-top:8px"></div>
+        </div>
+        <div class="card hidden" id="prod-cmp-card">
+          <div class="card-head"><h3>選択項目の比較</h3></div>
+          <div class="table-wrap"><table id="prod-cmp-table"></table></div>
+        </div>
+        <div class="card hidden" id="prod-detail-card">
+          <div class="card-head">
+            <h3>詳細データ <span class="muted small" id="prod-detail-count"></span></h3>
+            <div class="tbl-tools">
+              <div class="seg small" id="prod-detail-gran">
+                <button class="seg-btn active" data-gran="day">日次</button>
+                <button class="seg-btn" data-gran="month">月次</button>
+              </div>
+            </div>
+          </div>
+          <div class="table-wrap"><table id="prod-detail-table"></table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 商品×キーワード マトリクス ============ -->
+    <section class="view hidden" id="view-matrix">
+      <div class="filters card" id="mx-filters"></div>
+      <div class="card">
+        <div class="card-head">
+          <h3>商品ｘキーワード <span class="muted small" id="mx-cap"></span></h3>
+          <div class="tbl-tools">
+            <input type="text" id="mx-search" placeholder="🔍 商品URL・キーワードを検索">
+          </div>
+        </div>
+        <div id="mx-list"></div>
+      </div>
+    </section>
+
+    <!-- ============ 期間比較ビュー ============ -->
+    <section class="view hidden" id="view-compare">
+      <div class="filters card" id="cmp-filters"></div>
+      <div class="card hidden" id="cmp-picker-card">
+        <div class="card-head">
+          <h3 id="cmp-picker-title">対象を選択 <span class="muted small">行をクリックで選択（1件）</span></h3>
+          <div class="tbl-tools">
+            <input type="text" id="cmp-search" placeholder="🔍 検索（部分一致）">
+            <span class="muted small" id="cmp-target-label"></span>
+          </div>
+        </div>
+        <div id="cmp-cap" class="muted small" style="margin-bottom:8px"></div>
+        <div class="table-wrap" style="max-height:280px"><table id="cmp-picker"></table></div>
+      </div>
+      <div class="card" id="cmp-result-card">
+        <div class="card-head"><h3>KPI 比較</h3>
+          <div class="seg small" id="cmp-metric">
+            <button class="seg-btn active" data-metric="ad_cost">広告費</button>
+            <button class="seg-btn" data-metric="gms">売上</button>
+            <button class="seg-btn" data-metric="roas">ROAS</button>
+            <button class="seg-btn" data-metric="clicks">クリック</button>
+          </div>
+        </div>
+        <div class="table-wrap"><table id="cmp-table"></table></div>
+        <div class="chart-wrap" style="margin-top:14px"><canvas id="cmp-chart" height="240"></canvas><div class="chart-tip" id="cmp-tip"></div></div>
+        <div class="muted small" id="cmp-legend" style="margin-top:8px"></div>
+      </div>
+    </section>
+
+    <!-- ============ レポートビュー ============ -->
+    <section class="view hidden" id="view-report">
+      <div class="filters card no-print" id="rep-filters"></div>
+      <div class="filters-sub card no-print" id="rep-mode-bar">
+        <div class="seg small" id="rep-mode-toggle">
+          <button class="seg-btn active" data-mode="single">📄 通常</button>
+          <button class="seg-btn" data-mode="compare">期間比較</button>
+        </div>
+        <div id="rep-cmp-period" class="hidden cmp-period">
+          <span class="muted small">前期間:</span>
+          <div class="seg small" id="rep-cmp-preset">
+            <button class="seg-btn active" data-preset="prev">直前</button>
+            <button class="seg-btn" data-preset="yoy">前年同期</button>
+            <button class="seg-btn" data-preset="custom">カスタム</button>
+          </div>
+          <span id="rep-cmp-custom" style="display:none;gap:6px;align-items:center">
+            <input type="text" id="rep-cmp-from" data-dp="day" style="width:130px">
+            <span class="muted small">〜</span>
+            <input type="text" id="rep-cmp-to" data-dp="day" style="width:130px">
+          </span>
+          <span class="muted small" id="rep-cmp-info"></span>
+        </div>
+      </div>
+      <div class="card" id="report-body"></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- 設定モーダル -->
+<div class="modal-overlay hidden" id="settings-modal">
+  <div class="modal modal-lg">
+    <div class="modal-head"><h3>⚙️ 設定</h3><button id="btn-close-settings" class="x">✕</button></div>
+    <div class="modal-tabs">
+      <button class="modal-tab active" data-tab="basic">📍 基本</button>
+      <button class="modal-tab" data-tab="report">📄 レポート</button>
+      <button class="modal-tab" data-tab="goals">🎯 目標</button>
+      <button class="modal-tab" data-tab="category">🏷️ カテゴリ</button>
+      <button class="modal-tab" data-tab="db">💾 データ</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-pane" data-pane="basic">
+        <div class="cfg-field"><label>店舗ID</label><input type="text" id="cfg-shop"></div>
+        <p class="muted small">楽天RMSの店舗識別ID。データ取得時に使用されます。</p>
+      </div>
+
+      <div class="modal-pane hidden" data-pane="report">
+        <div class="cfg-field"><label>クライアント名 / 店舗表示名</label><input type="text" id="cfg-client" placeholder="例) 株式会社○○ / 凛"></div>
+        <div class="cfg-field"><label>レポートのサブタイトル</label><input type="text" id="cfg-subtitle" placeholder="例) 月次広告アナリティクス"></div>
+        <div class="cfg-field"><label>月次売上目標（円）<span class="muted small">推移グラフに点線で表示</span></label><input type="number" id="cfg-target-gms" placeholder="例) 5000000"></div>
+        <div class="cfg-field"><label>ロゴ画像（PNG/SVG）</label>
+          <div class="logo-row">
+            <input type="file" id="cfg-logo" accept="image/*">
+            <button class="ghost-btn small" id="btn-logo-clear">削除</button>
+            <div id="cfg-logo-preview" class="logo-preview"></div>
+          </div>
+        </div>
+        <button class="primary" id="btn-save-config">設定を保存</button>
+      </div>
+
+      <div class="modal-pane hidden" data-pane="goals">
+        <p class="muted small" style="margin-top:0">月次目標を設定すると、レポート/ダッシュボードで達成率や閾値判定に使われます。</p>
+        <div class="goal-grid">
+          <div class="cfg-field"><label>月次売上目標（円）</label><input type="number" id="goal-gms" placeholder="例) 5000000"></div>
+          <div class="cfg-field"><label>目標 ROAS（%）</label><input type="number" id="goal-roas" placeholder="例) 500"></div>
+          <div class="cfg-field"><label>月次 CV 目標</label><input type="number" id="goal-cv" placeholder="例) 1000"></div>
+          <div class="cfg-field"><label>許容 CPA（円）</label><input type="number" id="goal-cpa" placeholder="例) 1500"></div>
+        </div>
+        <p class="muted small" style="margin-top:16px;font-weight:700">インサイト閾値</p>
+        <div class="goal-grid">
+          <div class="cfg-field"><label>ROAS 警告 下落%</label><input type="number" id="thr-roas-down" placeholder="例) 10"></div>
+          <div class="cfg-field"><label>クリック 警告 下落%</label><input type="number" id="thr-clicks-down" placeholder="例) 15"></div>
+          <div class="cfg-field"><label>低効率キャンペーンROAS閾値（%）</label><input type="number" id="thr-low-roas" placeholder="例) 150"></div>
+          <div class="cfg-field"><label>外れ値 IQR 倍率</label><input type="number" id="thr-iqr" placeholder="既定 1.5" step="0.1"></div>
+        </div>
+        <button class="primary" id="btn-save-goals" style="margin-top:14px">目標と閾値を保存</button>
+        <span id="goals-msg" class="muted small" style="margin-left:10px"></span>
+      </div>
+
+      <div class="modal-pane hidden" data-pane="category">
+        <p class="muted small" style="margin-top:0">各SKU/プレフィックスに表示カテゴリを紐付けます。商品分析やレポートで分類表示に使われます。</p>
+        <div class="cfg-field">
+          <label>マッピング <span class="muted small">1行に「SKU または プレフィックス = カテゴリ名」</span></label>
+          <textarea id="cfg-cat" placeholder="h772-0001=ボディピアス&#10;ch=ピアス&#10;h1132=軟骨ピアス"></textarea>
+        </div>
+        <p class="muted small">完全一致 → プレフィックス一致 → 未分類 の順で適用。</p>
+        <div class="cfg-actions">
+          <button class="primary" id="btn-save-cat">保存</button>
+          <button class="ghost-btn" id="btn-auto-cat" title="各SKUのキーワード中、最も広告費が大きいキーワードをカテゴリとして自動推定">✨ 自動推定（キーワード基準）</button>
+          <span id="cfg-cat-msg" class="muted small"></span>
+        </div>
+      </div>
+
+      <div class="modal-pane hidden" data-pane="db">
+        <div class="cfg-field"><label>DB保存先 <span class="muted small">Google Drive 同期フォルダ推奨</span></label><input type="text" id="cfg-db" placeholder="C:/Users/名前/My Drive/広告データ/rms_ads.db"></div>
+        <p class="muted small">Google Drive デスクトップが入っていれば、このパスのファイルが自動同期されます。</p>
+        <div class="cfg-field"><label>storage_state.json のパス（任意）</label><input type="text" id="cfg-state" placeholder="storage_state.json"></div>
+        <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
+        <div class="cfg-field"><label>バックアップ先フォルダ</label><input type="text" id="cfg-export" placeholder="バックアップ先フォルダのパス"></div>
+        <div class="cfg-actions">
+          <button class="ghost-btn" id="btn-export">💾 バックアップを保存</button>
+          <span id="cfg-msg" class="muted small"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<!-- ログイン画面 (Supabase Auth) -->
+<div class="login-screen hidden" id="login-modal">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="login-logo">AD</div>
+      <div class="login-title">広告ダッシュボード</div>
+      <div class="login-subtitle">楽天RMS アナリティクス</div>
+    </div>
+    <div class="login-body">
+      <div class="login-field">
+        <label for="login-email">メールアドレス</label>
+        <input type="email" id="login-email" placeholder="you@example.com"
+               autocomplete="email" autofocus>
+      </div>
+      <div class="login-field">
+        <label for="login-password">パスワード</label>
+        <div class="login-pw-wrap">
+          <input type="password" id="login-password" placeholder="••••••••"
+                 autocomplete="current-password">
+          <button type="button" class="login-pw-toggle" id="btn-pw-toggle"
+                  aria-label="パスワードを表示" title="表示/非表示">
+            <svg class="ico-eye" viewBox="0 0 24 24" width="18" height="18" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>
+            </svg>
+            <svg class="ico-eye-off hidden" viewBox="0 0 24 24" width="18" height="18" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-7 0-10-7-10-7a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+              <line x1="1" y1="1" x2="23" y2="23"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <button class="login-submit" id="btn-login">
+        <span class="login-btn-label">ログイン</span>
+        <span class="login-btn-spinner hidden"></span>
+      </button>
+      <div class="login-error hidden" id="login-msg" role="alert"></div>
+    </div>
+    <div class="login-foot">
+      アカウントは Supabase 管理画面（Authentication → Users）で発行
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "smartprofit",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["server.py"],
+      "port": 8765
+    },
+    {
+      "name": "fastapi-dev",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["-m", "uvicorn", "api.index:app", "--port", "8766", "--log-level", "warning"],
+      "port": 8766
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+# Web framework (Vercel 서버리스용)
+fastapi>=0.110
+uvicorn[standard]>=0.27
+
+# DB
+psycopg2-binary>=2.9    # Postgres (Supabase) — 로컬은 sqlite3 표준 라이브러리
+
+# 환경변수
+python-dotenv>=1.0
+
+# Supabase JWT 검증 (ECC P-256 비대칭)
+pyjwt>=2.8
+cryptography>=42
+
+# 楽天 API 호출
+requests>=2.31
+
+# (옵션) AI 챗 — ANTHROPIC_API_KEY 설정 시
+# anthropic>=0.40
