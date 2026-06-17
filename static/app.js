@@ -149,12 +149,23 @@ async function _handleAuthError(r) {
     throw new Error("ログインが必要です");
   }
 }
+function _stringifyErr(j, status) {
+  // FastAPI 422 → {detail: [{loc, msg, type}, ...]} (배열)
+  // FastAPI 401 → {detail: "..."} (문자열)
+  // 일반 → {error: "..."}
+  if (typeof j === "string") return j;
+  const d = j && j.detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) return d.map(e => (e.loc ? e.loc.join(".") + ": " : "") + (e.msg || JSON.stringify(e))).join("; ");
+  if (j && j.error) return typeof j.error === "string" ? j.error : JSON.stringify(j.error);
+  return "HTTP " + status + " " + JSON.stringify(j);
+}
 const api = {
   async get(path) {
     const r = await fetch(path, { headers: _authHeaders() });
     await _handleAuthError(r);
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.detail || j.error || r.status);
+    let j; try { j = await r.json(); } catch { j = {}; }
+    if (!r.ok) throw new Error(_stringifyErr(j, r.status));
     return j;
   },
   async post(path, body) {
@@ -162,8 +173,8 @@ const api = {
       headers: { "Content-Type": "application/json", ..._authHeaders() },
       body: JSON.stringify(body || {}) });
     await _handleAuthError(r);
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.detail || j.error || r.status);
+    let j; try { j = await r.json(); } catch { j = {}; }
+    if (!r.ok) throw new Error(_stringifyErr(j, r.status));
     return j;
   },
 };
