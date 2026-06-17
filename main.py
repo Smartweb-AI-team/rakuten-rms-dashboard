@@ -19,12 +19,19 @@ try:
 except Exception:
     pass
 
-from fastapi import FastAPI, Request, HTTPException, Body, Depends
+from fastapi import FastAPI, Request, HTTPException, Body, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from db import DB, IS_PG
+
+# ----------------------------- Hybrid (Vercel + Cloud Run worker) -----------------------------
+# IS_WORKER=1   → Cloud Run 측: 백필을 실제 실행
+# IS_WORKER 없음 → Vercel 측: 백필 요청 받으면 WORKER_URL 로 forward
+IS_WORKER     = os.environ.get("IS_WORKER", "0") == "1"
+WORKER_URL    = os.environ.get("WORKER_URL", "").rstrip("/")
+WORKER_SECRET = os.environ.get("WORKER_SECRET", "")
 
 # ----------------------------- Auth -----------------------------
 # 멤버 = Supabase JWT (브라우저 로그인 후 Authorization: Bearer <jwt>)
@@ -309,17 +316,99 @@ def api_jobs(_u: dict = Depends(auth_required)):
 
 @app.get("/api/backfill/status")
 def api_backfill_status(_u: dict = Depends(auth_required)):
-    return {"running": False, "progress": 0, "total": 0, "done": 0, "current": None}
+    db = get_db()
+    # 가장 최근 backfill job 1개
+    jobs = db.list_download_jobs(status=None, limit=1)
+    db.conn.close()
+    if not jobs:
+        return {"running": False, "progress": 0, "total": 0, "done": 0, "current": None}
+    j = jobs[0]
+    running = j["status"] in ("pending", "registered")
+    return {
+        "running": running, "job_id": j["id"], "status": j["status"],
+        "start_date": j.get("start_date"), "end_date": j.get("end_date"),
+        "normalized_rows": j.get("normalized_rows"),
+        "error_msg": j.get("error_msg"),
+        "current": j.get("status"),
+        "progress": 100 if j["status"] == "completed" else (0 if not running else 50),
+        "total": 1, "done": 1 if j["status"] == "completed" else 0,
+    }
+
+def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
+    """Cloud Run 워커가 백그라운드에서 실행하는 실 백필 작업."""
+    db = get_db()
+    try:
+        from rakuten_client import RakutenAdClient
+        from collector import collect_range
+        cookies = get_session_cookies()
+        flat = {c["name"]: c["value"] for c in cookies if c.get("name")}
+        if "XSRF-TOKEN" not in flat:
+            db.update_download_job(job_id, status="failed",
+                                   error_msg="楽天セッション無効: 拡張機能でCookie再送信が必要")
+            db.conn.close(); return
+        db.update_download_job(job_id, status="registered")
+        client = RakutenAdClient(cookies)
+        start, end = date.fromisoformat(frm), date.fromisoformat(to)
+        rep = collect_range(client, db, shop_id, start, end)
+        db.update_download_job(job_id, status="completed",
+                               normalized_rows=sum(v for k, v in rep.items() if isinstance(v, int)))
+    except Exception as e:
+        try:
+            db.update_download_job(job_id, status="failed", error_msg=str(e)[:500])
+        except Exception:
+            pass
+    finally:
+        try: db.conn.close()
+        except: pass
 
 @app.post("/api/backfill")
-async def api_backfill(req: Request, _u: dict = Depends(auth_required)):
-    """Vercel 60초 제약으로 長期 백필 불가. 안내만."""
-    raise HTTPException(
-        503,
-        "一括取得(数ヶ月)は時間制約のためVercel上では実行できません。"
-        "管理者がローカル(本人PC)で1回だけ実行してください: "
-        "「py local_server.py」で起動後、ローカル画面から一括取得。"
-        "データはSupabaseに保存され、Vercel側でもすぐ見れます。")
+async def api_backfill(req: Request, bg: BackgroundTasks, _u: dict = Depends(auth_required)):
+    """
+    Vercel 측: 요청 받으면 WORKER_URL (Cloud Run) 로 forward + DB에 job 등록.
+    Cloud Run 측 (IS_WORKER=1): BackgroundTasks 로 실제 collect_range 실행.
+    """
+    body = await req.json()
+    frm, to_ = body.get("from"), body.get("to")
+    if not frm or not to_:
+        raise HTTPException(400, "from/to (日付) が必要です")
+    try:
+        date.fromisoformat(frm); date.fromisoformat(to_)
+    except Exception:
+        raise HTTPException(400, "日付形式が不正です (YYYY-MM-DD)")
+    cfg = get_config()
+    shop = cfg.get("shop_id", "")
+    if not shop:
+        raise HTTPException(400, "店舗ID未設定")
+
+    db = get_db()
+    job_id = db.add_download_job(shop, 0, 0, "backfill", frm, to_)
+    db.conn.close()
+
+    if IS_WORKER:
+        bg.add_task(_do_backfill_worker, job_id, frm, to_, shop)
+        return {"ok": True, "job_id": job_id, "status": "started", "where": "worker"}
+
+    # Vercel → Cloud Run forward
+    if not WORKER_URL:
+        raise HTTPException(
+            503,
+            "ワーカー未設定 (環境変数 WORKER_URL がVercelに設定されていません)。"
+            "Cloud Run デプロイ後、URLを設定してください。")
+    try:
+        import requests as _rq
+        headers = {"X-Worker-Secret": WORKER_SECRET} if WORKER_SECRET else {}
+        # Cloud Run 의 인증을 위해 Authorization 도 함께 전달 (auth_required 통과용)
+        auth_h = req.headers.get("authorization", "")
+        if auth_h:
+            headers["Authorization"] = auth_h
+        _rq.post(f"{WORKER_URL}/api/backfill",
+                 json={"from": frm, "to": to_, "_job_id": job_id},
+                 headers=headers, timeout=5)
+    except _rq.exceptions.Timeout:
+        pass  # 워커는 백그라운드로 계속 실행됨 — 정상
+    except Exception as e:
+        raise HTTPException(503, f"ワーカー呼出失敗: {str(e)[:200]}")
+    return {"ok": True, "job_id": job_id, "status": "forwarded", "where": "vercel→worker"}
 
 @app.post("/api/collect")
 async def api_collect(req: Request, _u: dict = Depends(auth_required)):
