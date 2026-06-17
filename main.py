@@ -314,6 +314,24 @@ def api_raw(req: Request, _u: dict = Depends(auth_required)):
 def api_jobs(_u: dict = Depends(auth_required)):
     return {"jobs": [], "counts": {"pending": 0, "registered": 0, "completed": 0, "failed": 0}}
 
+@app.post("/api/backfill/cancel")
+async def api_backfill_cancel(_u: dict = Depends(auth_required)):
+    """진행 중/대기 중인 모든 백필 job 을 'cancelled' 로 표시."""
+    db = get_db()
+    cancelled = 0
+    for j in db.list_download_jobs(limit=50):
+        if j["status"] in ("pending", "registered"):
+            db.update_download_job(j["id"], status="cancelled",
+                                   error_msg="ユーザーがキャンセル")
+            cancelled += 1
+    db.conn.close()
+    return {"ok": True, "cancelled": cancelled}
+
+@app.post("/api/backfill/reset")
+async def api_backfill_reset(_u: dict = Depends(auth_required)):
+    """모든 stuck job 정리 (관리자용)."""
+    return await api_backfill_cancel()
+
 @app.get("/api/backfill/status")
 def api_backfill_status(_u: dict = Depends(auth_required)):
     db = get_db()
