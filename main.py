@@ -281,13 +281,13 @@ def api_data(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
     cfg = get_config(); db = get_db()
     rows = db.query_performance(cfg.get("shop_id", ""), p["from"], p["to"],
-                                ad_product=p["product"],
+                                ad_product=None if p["product"] == "ALL" else p["product"],
                                 selection_type=p["selection_type"],
                                 user_segment=p["segment"], cv_window=p["window"],
                                 order_by=p["order_by"], desc=p["desc"],
                                 limit=p["limit"])
     db.conn.close()
-    return rows
+    return {"rows": rows, "count": len(rows)}
 
 @app.get("/api/raw")
 def api_raw(req: Request, _u: dict = Depends(auth_required)):
@@ -295,7 +295,12 @@ def api_raw(req: Request, _u: dict = Depends(auth_required)):
     cfg = get_config(); db = get_db()
     rows = db.get_raw(cfg.get("shop_id", ""), p["product"], p["from"], p["to"])
     db.conn.close()
-    return rows
+    fields, seen = ["report_date"], {"report_date"}
+    for r in rows:
+        for k in r:
+            if k not in seen:
+                seen.add(k); fields.append(k)
+    return {"fields": fields, "rows": rows, "count": len(rows)}
 
 # MVP 스텁 — 백그라운드 작업 라우트 (Task #14 본격 구현)
 @app.get("/api/jobs")
