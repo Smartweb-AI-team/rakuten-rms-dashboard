@@ -354,23 +354,49 @@ def api_backfill_status(_u: dict = Depends(auth_required)):
 
 def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
     """Cloud Run 워커가 백그라운드에서 실행하는 실 백필 작업."""
+    import sys, traceback
+    def log(msg):
+        print(f"[backfill #{job_id}] {msg}", flush=True)
+    log(f"START shop={shop_id} {frm}~{to}")
     db = get_db()
     try:
         from rakuten_client import RakutenAdClient
         from collector import collect_range
         cookies = get_session_cookies()
+        log(f"cookies loaded: {len(cookies)} items")
         flat = {c["name"]: c["value"] for c in cookies if c.get("name")}
         if "XSRF-TOKEN" not in flat:
+            log("FAILED: no XSRF-TOKEN")
             db.update_download_job(job_id, status="failed",
                                    error_msg="楽天セッション無効: 拡張機能でCookie再送信が必要")
             db.conn.close(); return
-        db.update_download_job(job_id, status="registered")
+        db.update_download_job(job_id, status="registered",
+                               error_msg=f"started at {datetime.now().isoformat(timespec='seconds')}")
         client = RakutenAdClient(cookies)
+        log("checking 楽天 session...")
+        # session check 분리 — 여기서 막히면 알 수 있음
+        try:
+            session_ok = client.check_session()
+            log(f"session check: {session_ok}")
+        except Exception as se:
+            log(f"session check FAILED: {se}")
+            db.update_download_job(job_id, status="failed",
+                                   error_msg=f"楽天session check: {str(se)[:300]}")
+            db.conn.close(); return
+        if not session_ok:
+            db.update_download_job(job_id, status="failed",
+                                   error_msg="楽天セッション切れ: Cookie 再送信が必要")
+            db.conn.close(); return
         start, end = date.fromisoformat(frm), date.fromisoformat(to)
+        log(f"collect_range starting {start}~{end}")
         rep = collect_range(client, db, shop_id, start, end)
+        log(f"collect_range DONE: {rep}")
         db.update_download_job(job_id, status="completed",
-                               normalized_rows=sum(v for k, v in rep.items() if isinstance(v, int)))
+                               normalized_rows=sum(v for k, v in rep.items() if isinstance(v, int)),
+                               error_msg=f"completed: RPP_sel1={rep.get('RPP_sel1',0)} RPP_sel2={rep.get('RPP_sel2',0)} skipped={rep.get('skipped_calls',0)}")
     except Exception as e:
+        log(f"EXCEPTION: {e}")
+        traceback.print_exc(file=sys.stdout)
         try:
             db.update_download_job(job_id, status="failed", error_msg=str(e)[:500])
         except Exception:
@@ -378,6 +404,7 @@ def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
     finally:
         try: db.conn.close()
         except: pass
+        log("END")
 
 @app.post("/api/backfill")
 async def api_backfill(req: Request, bg: BackgroundTasks, _u: dict = Depends(auth_required)):
