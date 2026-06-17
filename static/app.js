@@ -510,11 +510,18 @@ $("#btn-backfill").onclick = async () => {
   const st = await api.get("/api/status").catch(() => null);
   if (st && !st.session) return toast("セッションが無効です — 拡張機能の「🍪 Cookieを送信」を押してから再実行してください", true);
   try {
-    const r = await api.post("/api/backfill", { from, to });  // delay는 서버 기본값(안전) 사용
+    const r = await api.post("/api/backfill", { from, to });
+    if (!r.ok) {
+      const dbg = JSON.stringify(r.debug || {}, null, 2);
+      console.error("[backfill] forward failed:", r);
+      alert(`一括取得の開始に失敗\n\nエラー: ${r.error}\n\nデバッグ:\n${dbg}`);
+      return;
+    }
     if ($("#view-collect").classList.contains("hidden")) switchView("collect");
     $("#bf-progress").classList.remove("hidden");
     $("#btn-backfill").disabled = true; $("#btn-refill").disabled = true;
     $("#btn-backfill-cancel").style.display = "";
+    console.log("[backfill] started:", r);
     toast(`取得を開始しました（${r.months}ヶ月） — 進捗バーで確認できます。完了まで数分かかります。`, "ok");
     setTimeout(() => $("#bf-progress").scrollIntoView({ behavior: "smooth", block: "center" }), 120);
     pollBackfill();

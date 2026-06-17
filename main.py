@@ -438,15 +438,17 @@ async def api_backfill(req: Request, bg: BackgroundTasks, _u: dict = Depends(aut
         bg.add_task(_do_backfill_worker, job_id, frm, to_, shop)
         return {"ok": True, "started": True, "job_id": job_id, "months": months, "where": "worker"}
 
-    # Vercel → Cloud Run forward
+    # Vercel → Cloud Run forward — 모든 시도/결과를 응답에 직접 포함 (디버그 가능)
+    forward_debug = {"worker_url": WORKER_URL, "have_secret": bool(WORKER_SECRET),
+                     "status": None, "response": None, "error": None,
+                     "elapsed_ms": None}
     if not WORKER_URL:
-        # DB 에 상태 기록 후 종료 (워커 없으니 영구 pending)
-        get_db_().update_download_job(job_id, status="failed",
-                                       error_msg="WORKER_URL env var not set on Vercel")
-        raise HTTPException(503, "ワーカー未設定: WORKER_URL がVercelに無いです。")
+        forward_debug["error"] = "WORKER_URL env var not set on Vercel"
+        raise HTTPException(503, json.dumps({"msg": "ワーカー未設定", "debug": forward_debug}))
 
     forward_url = f"{WORKER_URL}/api/backfill"
-    print(f"[vercel→worker] POST {forward_url} (job_id={job_id})", flush=True)
+    import time as _t
+    t0 = _t.time()
     try:
         import requests as _rq
         headers = {"Content-Type": "application/json"}
@@ -457,28 +459,28 @@ async def api_backfill(req: Request, bg: BackgroundTasks, _u: dict = Depends(aut
             headers["Authorization"] = auth_h
         r = _rq.post(forward_url,
                      json={"from": frm, "to": to_, "_job_id": job_id},
-                     headers=headers, timeout=10)
-        print(f"[vercel→worker] response: {r.status_code} {r.text[:200]}", flush=True)
+                     headers=headers, timeout=15)
+        forward_debug["elapsed_ms"] = int((_t.time() - t0) * 1000)
+        forward_debug["status"] = r.status_code
+        forward_debug["response"] = r.text[:500]
         if r.status_code >= 400:
             db2 = get_db()
             db2.update_download_job(job_id, status="failed",
                                     error_msg=f"worker {r.status_code}: {r.text[:200]}")
             db2.conn.close()
-            raise HTTPException(503, f"ワーカー {r.status_code}: {r.text[:200]}")
-    except _rq.exceptions.Timeout:
-        print(f"[vercel→worker] TIMEOUT after 10s — worker may still be processing", flush=True)
+            return {"ok": False, "job_id": job_id, "months": months,
+                    "error": f"worker returned {r.status_code}", "debug": forward_debug}
     except Exception as e:
-        print(f"[vercel→worker] EXCEPTION: {type(e).__name__}: {e}", flush=True)
+        forward_debug["elapsed_ms"] = int((_t.time() - t0) * 1000)
+        forward_debug["error"] = f"{type(e).__name__}: {str(e)[:300]}"
         db2 = get_db()
         db2.update_download_job(job_id, status="failed",
-                                error_msg=f"forward fail: {type(e).__name__}: {str(e)[:200]}")
+                                error_msg=f"forward {type(e).__name__}: {str(e)[:200]}")
         db2.conn.close()
-        raise HTTPException(503, f"ワーカー呼出失敗: {type(e).__name__}: {str(e)[:200]}")
-    return {"ok": True, "started": True, "job_id": job_id, "months": months, "where": "vercel→worker"}
-
-def get_db_():
-    """헬퍼 — 위 함수 내에서 같이 사용."""
-    return get_db()
+        return {"ok": False, "job_id": job_id, "months": months,
+                "error": forward_debug["error"], "debug": forward_debug}
+    return {"ok": True, "started": True, "job_id": job_id, "months": months,
+            "where": "vercel→worker", "debug": forward_debug}
 
 @app.post("/api/collect")
 async def api_collect(req: Request, _u: dict = Depends(auth_required)):
