@@ -1,17 +1,50 @@
 {
   "manifest_version": 3,
-  "name": "広告ダッシュボード Cookieブリッジ",
-  "version": "0.1.0",
-  "description": "楽天RMSのログインCookie（XSRF-TOKEN含む）をローカルの広告ダッシュボードへ安全に送信します。",
-  "permissions": ["cookies"],
+  "name": "Rakuten RMS Analytics",
+  "version": "1.0.0",
+  "description": "楽天RMS 広告データ収集ブリッジ (商品別/キーワード別/全体/キャンペーン)",
+  "permissions": [
+    "cookies",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess",
+    "storage",
+    "scripting",
+    "tabs",
+    "activeTab"
+  ],
   "host_permissions": [
-    "*://*.rakuten.co.jp/*",
+    "https://ad.rms.rakuten.co.jp/*",
+    "https://*.rakuten.co.jp/*",
     "http://127.0.0.1:8765/*",
-    "http://localhost:8765/*"
+    "http://localhost:8765/*",
+    "https://*.vercel.app/*"
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Cookie送信"
+    "default_title": "Rakuten RMS Analytics"
   },
-  "background": { "service_worker": "background.js" }
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.vercel.app/*",
+        "http://localhost:8765/*",
+        "http://127.0.0.1:8765/*"
+      ],
+      "js": ["dashboard-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset_1",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  }
 }

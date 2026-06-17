@@ -1,96 +1,86 @@
-// 楽天 RMS 광고는 経路마다 Path=/rpp, /cpa, /tda 로 XSRF-TOKEN 가 따로
-// → 経路別 URL 로 getAll. domain 전체 긁으면 Cookie 헤더 10KB↑ → WAF 400
-const SERVER = "http://127.0.0.1:8765/api/session";
-const URLS = [
-  "https://ad.rms.rakuten.co.jp/",
-  "https://ad.rms.rakuten.co.jp/rpp/",
-  "https://ad.rms.rakuten.co.jp/cpa/",
-  "https://ad.rms.rakuten.co.jp/tda/",
-  "https://ad.rms.rakuten.co.jp/shared/",
-];
-const DEBOUNCE_MS = 60 * 1000; // 1分
+/**
+ * Rakuten RMS Analytics — Background Service Worker
+ * 기능:
+ *  - 楽天 RMS 광고 페이지 진입 시 cookies 자동 송신 (대시보드로)
+ *  - 대시보드 발 백필 트리거 → 楽天 API 직접 호출 → 결과 업로드
+ *  - 현재 楽天 로그인 shop_id 자동 추출
+ */
 
-async function collectCookies() {
-  const byKey = {};
-  for (const url of URLS) {
-    for (const c of await chrome.cookies.getAll({ url })) {
-      byKey[c.name + "\n" + c.path] = {
-        name: c.name, value: c.value, path: c.path, domain: c.domain,
-      };
+import { startAutoSend, sendDashboardCookies } from './services/cookie-bridge.js';
+import { runBackfill, getCurrentRakutenShopId } from './services/rakuten-collector.js';
+
+console.log('[bg] Rakuten RMS Analytics 起動 v1.0.0');
+startAutoSend();
+console.log('[bg] 📡 Cookie 自動送信 ON');
+
+// 백필 진행률 push
+const _backfillProgressByTask = new Map();
+const _backfillSubscribers = new Map();
+
+function _pushProgress(taskId, info) {
+  _backfillProgressByTask.set(taskId, info);
+  const tabs = _backfillSubscribers.get(taskId);
+  if (tabs) {
+    for (const tabId of tabs) {
+      chrome.tabs.sendMessage(tabId, { type: 'BACKFILL_PROGRESS', taskId, ...info })
+        .catch(() => {});
     }
   }
-  return Object.values(byKey);
 }
 
-async function sendCookies() {
-  const cookieList = await collectCookies();
-  const xsrfPaths = cookieList.filter(c => c.name === "XSRF-TOKEN").map(c => c.path);
-  const res = await fetch(SERVER, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cookieList }),
-  });
-  const data = await res.json();
-  return { count: cookieList.length, hasXsrf: xsrfPaths.length > 0, xsrfPaths, server: data };
-}
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg) return;
 
-function setBadge(ok, count) {
-  if (ok) {
-    chrome.action.setBadgeText({ text: String(count > 99 ? "99+" : count) });
-    chrome.action.setBadgeBackgroundColor({ color: "#0c7a3e" });
-    chrome.action.setTitle({ title: `Cookie送信OK (${count}件) - ${new Date().toLocaleTimeString("ja-JP")}` });
-  } else {
-    chrome.action.setBadgeText({ text: "!" });
-    chrome.action.setBadgeBackgroundColor({ color: "#bf0000" });
-    chrome.action.setTitle({ title: "Cookie送信失敗 - サーバ確認" });
-  }
-}
-
-// 팝업에서 호출
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type === "SEND_COOKIES") {
-    sendCookies()
-      .then(r => { setBadge(true, r.count); sendResponse({ ok: true, ...r }); })
-      .catch(e => { setBadge(false); sendResponse({ ok: false, error: String(e) }); });
+  // Cookie 수동 송신 (popup → background)
+  if (msg.type === 'SEND_COOKIES') {
+    sendDashboardCookies()
+      .then(r => sendResponse({ ok: true, ...r }))
+      .catch(e => sendResponse({ ok: false, error: String(e) }));
     return true;
   }
-});
 
-let lastAutoSend = 0;
-async function autoSend(reason) {
-  const now = Date.now();
-  if (now - lastAutoSend < DEBOUNCE_MS) return;
-  lastAutoSend = now;
-  try {
-    const r = await sendCookies();
-    setBadge(true, r.count);
-    console.log(`[auto-send:${reason}] OK ${r.count} cookies`);
-  } catch (e) {
-    setBadge(false);
-    console.warn(`[auto-send:${reason}] failed:`, e);
+  // 대시보드 → background: URL/JWT 동기화
+  if (msg.type === 'DASHBOARD_CONFIG') {
+    chrome.storage.local.set({
+      dashboardServer: msg.dashboardServer,
+      extensionToken: msg.extensionToken,
+    }, () => sendResponse({ ok: true }));
+    return true;
   }
-}
 
-// ① 페이지 이동 / 새 탭에서 RMS광고 열기
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== "complete") return;
-  const url = tab.url || "";
-  if (!url.startsWith("https://ad.rms.rakuten.co.jp/")) return;
-  autoSend("tab-update");
-});
-
-// ② SW 起動時 (브라우저 재시작/확장 리로드) 이미 열린 RMS탭 있으면 즉시 송신
-(async () => {
-  const tabs = await chrome.tabs.query({ url: "https://ad.rms.rakuten.co.jp/*" });
-  if (tabs.length > 0) autoSend("startup");
-})();
-
-// ③ 탭 전환 시에도 확인 (5분 이상 지났으면 갱신)
-chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    if ((tab.url || "").startsWith("https://ad.rms.rakuten.co.jp/")) {
-      autoSend("tab-activate");
+  // 백필 시작
+  if (msg.type === 'START_BACKFILL') {
+    const task = {
+      taskId: msg.taskId || ('bf_' + Date.now()),
+      shop_id: msg.shop_id,
+      from: msg.from,
+      to: msg.to,
+      sels: msg.sels,
+      vercelUrl: msg.vercelUrl,
+      jwt: msg.jwt,
+    };
+    if (sender.tab?.id) {
+      if (!_backfillSubscribers.has(task.taskId)) {
+        _backfillSubscribers.set(task.taskId, new Set());
+      }
+      _backfillSubscribers.get(task.taskId).add(sender.tab.id);
     }
-  } catch (_) { /* ignore */ }
+    runBackfill(task, (info) => _pushProgress(task.taskId, info))
+      .then(result => _pushProgress(task.taskId, { done: true, current: '完了', ...result }))
+      .catch(err => _pushProgress(task.taskId, { done: true, error: String(err) }));
+    sendResponse({ ok: true, taskId: task.taskId });
+    return true;
+  }
+
+  if (msg.type === 'GET_BACKFILL_PROGRESS') {
+    sendResponse(_backfillProgressByTask.get(msg.taskId) || null);
+    return false;
+  }
+
+  if (msg.type === 'GET_RAKUTEN_SHOP_ID') {
+    getCurrentRakutenShopId()
+      .then(shopId => sendResponse({ shopId }))
+      .catch(() => sendResponse({ shopId: null }));
+    return true;
+  }
 });

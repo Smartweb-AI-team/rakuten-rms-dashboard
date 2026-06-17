@@ -1,0 +1,31 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        { "header": "Access-Control-Allow-Origin", "operation": "set", "value": "*" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "rakuten.co.jp",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 2,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "Origin", "operation": "set", "value": "https://ad.rms.rakuten.co.jp" },
+        { "header": "Referer", "operation": "set", "value": "https://ad.rms.rakuten.co.jp/rpp/" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "ad.rms.rakuten.co.jp",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]
