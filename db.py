@@ -241,12 +241,34 @@ class _PGRowProxy:
     def __len__(self): return len(self._d)
 
 
+_PG_CONN_CACHE = {"conn": None, "init_done": False}
+
+def _get_pg_conn():
+    """모듈 글로벌 풀 — Cloud Run 워커에서 매 요청마다 새 연결 만드는 cold start 비용 회피."""
+    c = _PG_CONN_CACHE["conn"]
+    if c is not None:
+        try:
+            # 연결 살아있는지 가벼운 ping
+            cur = c.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+            return c
+        except Exception:
+            try: c.close()
+            except: pass
+            _PG_CONN_CACHE["conn"] = None
+    c = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    c.autocommit = False
+    _PG_CONN_CACHE["conn"] = c
+    return c
+
 class DB:
     def __init__(self, path: str = "rms_ads.db"):
         if IS_PG:
-            self.conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
-            self.conn.autocommit = False
-            self._init_pg()
+            self.conn = _get_pg_conn()
+            if not _PG_CONN_CACHE["init_done"]:
+                self._init_pg()
+                _PG_CONN_CACHE["init_done"] = True
         else:
             self.conn = sqlite3.connect(path)
             self.conn.row_factory = sqlite3.Row
@@ -320,6 +342,12 @@ class DB:
             self.conn.commit()
         finally:
             cur.close()
+
+    def close(self):
+        """Postgres 모드에선 글로벌 풀이라 close 무시. SQLite 만 실제 close."""
+        if not IS_PG:
+            try: self.conn.close()
+            except: pass
 
     def upsert_performance(self, rows: list[dict], collected_by: str | None = None) -> int:
         if not rows:

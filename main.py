@@ -128,7 +128,7 @@ def get_config() -> dict:
     """KV에서 설정 읽기. 없으면 환경변수 / 기본값."""
     db = get_db()
     cfg = db.kv_get("config", {}) or {}
-    db.conn.close()
+    db.close()
     # 환경변수 우선
     if os.environ.get("SHOP_ID"):
         cfg["shop_id"] = os.environ["SHOP_ID"]
@@ -139,18 +139,18 @@ def get_config() -> dict:
 def save_config(cfg: dict) -> None:
     db = get_db()
     db.kv_set("config", cfg)
-    db.conn.close()
+    db.close()
 
 def get_session_cookies() -> list[dict]:
     db = get_db()
     cookies = db.kv_get("session_cookies", []) or []
-    db.conn.close()
+    db.close()
     return cookies
 
 def set_session_cookies(cookies: list[dict]) -> None:
     db = get_db()
     db.kv_set("session_cookies", cookies)
-    db.conn.close()
+    db.close()
 
 def session_flat() -> dict[str, str]:
     """name -> value (path 무시 평탄)."""
@@ -169,7 +169,7 @@ def api_status(user: dict = Depends(auth_required)):
     db = get_db()
     bounds = db.date_bounds(cfg.get("shop_id", ""))
     products = db.products_present(cfg.get("shop_id", ""))
-    db.conn.close()
+    db.close()
     ok, msg = session_ok()
     today = date.today()
     return {
@@ -209,7 +209,7 @@ def api_coverage(_u: dict = Depends(auth_required)):
     cfg = get_config()
     db = get_db()
     cov = db.coverage(cfg.get("shop_id", ""))
-    db.conn.close()
+    db.close()
     return {"coverage": cov}
 
 def _parse_common(kw: dict) -> dict:
@@ -249,7 +249,7 @@ def api_kpis(req: Request, _u: dict = Depends(auth_required)):
                    user_segment=p["segment"], cv_window=p["window"])
     deltas = {k: _pct(cur.get(k), prev.get(k))
               for k in ("ad_cost", "gms", "clicks", "cv", "roas", "cpc")}
-    db.conn.close()
+    db.close()
     return {
         "current": cur, "previous": prev,
         "previous_range": {"from": prev_from, "to": prev_to},
@@ -266,7 +266,7 @@ def api_series(req: Request, _u: dict = Depends(auth_required)):
     r = db.daily_series(cfg.get("shop_id", ""), p["from"], p["to"],
                         ad_product=p["product"], selection_type=p["selection_type"],
                         user_segment=p["segment"], cv_window=p["window"])
-    db.conn.close()
+    db.close()
     return {"series": r}
 
 @app.get("/api/top")
@@ -280,7 +280,7 @@ def api_top(req: Request, _u: dict = Depends(auth_required)):
                           user_segment=p["segment"], cv_window=p["window"],
                           order_by=qp.get("order_by", "ad_cost"),
                           limit=int(qp.get("limit", 10)))
-    db.conn.close()
+    db.close()
     return {"rows": r}
 
 @app.get("/api/data")
@@ -293,7 +293,7 @@ def api_data(req: Request, _u: dict = Depends(auth_required)):
                                 user_segment=p["segment"], cv_window=p["window"],
                                 order_by=p["order_by"], desc=p["desc"],
                                 limit=p["limit"])
-    db.conn.close()
+    db.close()
     return {"rows": rows, "count": len(rows)}
 
 @app.get("/api/raw")
@@ -301,7 +301,7 @@ def api_raw(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
     cfg = get_config(); db = get_db()
     rows = db.get_raw(cfg.get("shop_id", ""), p["product"], p["from"], p["to"])
-    db.conn.close()
+    db.close()
     fields, seen = ["report_date"], {"report_date"}
     for r in rows:
         for k in r:
@@ -328,7 +328,7 @@ async def api_backfill_cancel(_u: dict = Depends(auth_required)):
     prog = db.kv_get("backfill_progress", {}) or {}
     prog["cancel"] = True
     db.kv_set("backfill_progress", prog)
-    db.conn.close()
+    db.close()
     return {"ok": True, "cancelled": cancelled}
 
 @app.post("/api/backfill/reset")
@@ -341,7 +341,7 @@ def api_backfill_status(_u: dict = Depends(auth_required)):
     """워커가 app_kv 의 'backfill_progress' 에 저장한 실시간 진행률을 그대로 반환."""
     db = get_db()
     prog = db.kv_get("backfill_progress", {}) or {}
-    db.conn.close()
+    db.close()
     base = {"running": False, "done": 0, "total": 0, "ok": 0, "failed": 0,
             "rows": 0, "elapsed_seconds": 0, "totals": {}, "skips": {},
             "notes": [], "log": [], "current": "", "error": None}
@@ -364,7 +364,7 @@ def _save_progress(prog: dict):
     try:
         db = get_db()
         db.kv_set("backfill_progress", prog)
-        db.conn.close()
+        db.close()
     except Exception as e:
         print(f"[backfill] _save_progress fail: {e}", flush=True)
 
@@ -527,7 +527,7 @@ def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
         prog["current"] = ""
         prog["elapsed_seconds"] = int(_t.time() - t0)
         _save_progress(prog)
-        try: db.conn.close()
+        try: db.close()
         except: pass
         log("END")
 
@@ -552,7 +552,7 @@ async def api_backfill(req: Request, bg: BackgroundTasks, _u: dict = Depends(aut
 
     db = get_db()
     job_id = db.add_download_job(shop, 0, 0, "backfill", frm, to_)
-    db.conn.close()
+    db.close()
 
     # 개월 수 (UI 표시용)
     from datetime import date as _d
@@ -592,7 +592,7 @@ async def api_backfill(req: Request, bg: BackgroundTasks, _u: dict = Depends(aut
             db2 = get_db()
             db2.update_download_job(job_id, status="failed",
                                     error_msg=f"worker {r.status_code}: {r.text[:200]}")
-            db2.conn.close()
+            db2.close()
             return {"ok": False, "job_id": job_id, "months": months,
                     "error": f"worker returned {r.status_code}", "debug": forward_debug}
     except Exception as e:
@@ -601,7 +601,7 @@ async def api_backfill(req: Request, bg: BackgroundTasks, _u: dict = Depends(aut
         db2 = get_db()
         db2.update_download_job(job_id, status="failed",
                                 error_msg=f"forward {type(e).__name__}: {str(e)[:200]}")
-        db2.conn.close()
+        db2.close()
         return {"ok": False, "job_id": job_id, "months": months,
                 "error": forward_debug["error"], "debug": forward_debug}
     return {"ok": True, "started": True, "job_id": job_id, "months": months,
@@ -643,7 +643,7 @@ async def api_collect(req: Request, _u: dict = Depends(auth_required)):
         t0 = _t.time()
         rep = collect_range(client, db, shop, start, end)
         rep["elapsed_seconds"] = int(_t.time() - t0)
-        db.conn.close()
+        db.close()
         return rep
     except Exception as e:
         raise HTTPException(500, f"取得失敗: {str(e)[:200]}")
