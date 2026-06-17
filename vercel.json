@@ -1,20 +1,15 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "version": 2,
-  "builds": [
-    { "src": "api/index.py", "use": "@vercel/python" }
-  ],
-  "routes": [
-    { "src": "/api/(.*)", "dest": "api/index.py" },
-    { "src": "/static/(.*)", "dest": "/static/$1" },
-    { "src": "/(.*\\.(js|css|png|jpg|svg|ico|woff2?|html))", "dest": "/static/$1" },
-    { "src": "/", "dest": "/static/index.html" },
-    { "src": "/(.*)", "dest": "/static/index.html" }
-  ],
   "functions": {
     "api/index.py": {
       "memory": 1024,
       "maxDuration": 60
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/index.py" },
+    { "source": "/static/(.*)", "destination": "/static/$1" },
+    { "source": "/", "destination": "/static/index.html" },
+    { "source": "/((?!api/).*)", "destination": "/static/$1" }
+  ]
 }
