@@ -1,23 +1,17 @@
 """
-api/index.py — Vercel 서버리스 FastAPI 엔트리.
-모든 /api/* 라우트가 여기로 들어옴 (vercel.json 의 rewrites 로).
+main.py — Vercel FastAPI 엔트리 (루트).
 
 로컬 개발:
-  uvicorn api.index:app --reload --port 8765
-  (기존 server.py 도 그대로 사용 가능 — DB 추상화 덕)
+  uvicorn main:app --reload --port 8765
 
 본번:
-  Vercel @vercel/python 런타임이 자동으로 ASGI 앱을 호스팅.
+  Vercel FastAPI preset 자동 인식.
 """
 from __future__ import annotations
-import os, sys, json
+import os, json
 from datetime import date, datetime, timedelta
 
-# 프로젝트 루트를 import path 에 추가 (db.py, rakuten_client.py 등 import)
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = os.path.dirname(os.path.abspath(__file__))
 
 try:
     from dotenv import load_dotenv

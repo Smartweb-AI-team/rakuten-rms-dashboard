@@ -4,7 +4,7 @@
     {
       "name": "smartprofit",
       "runtimeExecutable": "py",
-      "runtimeArgs": ["server.py"],
+      "runtimeArgs": ["local_server.py"],
       "port": 8765
     },
     {
