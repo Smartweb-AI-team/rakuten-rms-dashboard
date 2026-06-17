@@ -1273,9 +1273,81 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlsplit(self.path)
         path = u.path
+        shop = CONFIG["shop_id"]
         try:
+            # multipart 는 JSON 으로 못 읽으므로 path 먼저 분기
+            ct = self.headers.get("Content-Type", "")
+            if path == "/api/ingest_zip_batch" and ct.startswith("multipart/"):
+                import zipfile, io as _io
+                boundary = None
+                for part in ct.split(";"):
+                    p = part.strip()
+                    if p.startswith("boundary="):
+                        boundary = p[len("boundary="):].strip().strip('"')
+                content_length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(content_length)
+                # 간단 parser: --boundary 로 split 후 각 part 의 헤더/body 분리
+                marker = b"--" + boundary.encode()
+                parts = raw.split(marker)
+                manifest = None
+                zips = {}
+                for part in parts:
+                    if not part or part in (b"--\r\n", b"--"):
+                        continue
+                    part = part.strip(b"\r\n")
+                    if b"\r\n\r\n" not in part:
+                        continue
+                    hdr_blk, payload = part.split(b"\r\n\r\n", 1)
+                    # trailing -- 제거
+                    if payload.endswith(b"\r\n--"):
+                        payload = payload[:-4]
+                    hdr_blk = hdr_blk.decode(errors="replace")
+                    # name 추출
+                    import re as _re
+                    nm = _re.search(r'name="([^"]+)"', hdr_blk)
+                    if not nm:
+                        continue
+                    name = nm.group(1)
+                    if name == "manifest":
+                        manifest = json.loads(payload.decode("utf-8"))
+                    elif name.startswith("zip_"):
+                        zips[name] = payload
+                if not manifest:
+                    return self._err("manifest required", 400)
+                from rakuten_client import normalize_rpp_item_csv, normalize_rpp_keyword_csv
+                results = []
+                db = get_db()
+                for i, meta in enumerate(manifest):
+                    shop_id = meta.get("shop_id") or shop
+                    sel = int(meta.get("selection_type"))
+                    report_date = meta.get("report_date")
+                    zip_bytes = zips.get(f"zip_{i}")
+                    if not zip_bytes:
+                        results.append({"report_date": report_date, "inserted": 0, "ok": False, "error": "no zip"})
+                        continue
+                    try:
+                        with zipfile.ZipFile(_io.BytesIO(zip_bytes)) as zf:
+                            csv_name = next((n for n in zf.namelist() if n.lower().endswith(".csv")), None)
+                            if not csv_name:
+                                results.append({"report_date": report_date, "inserted": 0, "ok": False, "error": "no CSV"})
+                                continue
+                            csv_bytes = zf.read(csv_name)
+                        csv_text = csv_bytes.decode("cp932", errors="replace")
+                        if sel == 4:
+                            norm = normalize_rpp_keyword_csv(csv_text, shop_id)
+                        elif sel == 3:
+                            norm = normalize_rpp_item_csv(csv_text, shop_id)
+                        else:
+                            results.append({"report_date": report_date, "inserted": 0, "ok": False, "error": f"sel {sel}"})
+                            continue
+                        inserted = db.upsert_performance(norm)
+                        results.append({"report_date": report_date, "inserted": inserted, "ok": True})
+                    except Exception as e:
+                        results.append({"report_date": report_date, "inserted": 0, "ok": False, "error": str(e)[:100]})
+                return self._json({"ok": True, "count": len(results), "results": results})
+
+            # 멀티파트 아닌 경우 JSON body 읽기
             body = self._read_json()
-            shop = CONFIG["shop_id"]
 
             if path == "/api/ingest":
                 # 확장(브라우저 워커) 가 楽天 응답을 업로드 → 파싱 + DB 저장

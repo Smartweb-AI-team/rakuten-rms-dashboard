@@ -183,6 +183,53 @@ def api_status(user: dict = Depends(auth_required)):
         "yesterday": (today - timedelta(days=1)).isoformat(),
     }
 
+@app.post("/api/ingest_zip_batch")
+async def api_ingest_zip_batch(req: Request, user: dict = Depends(auth_required)):
+    """확장 → 멀티파트 (manifest JSON + zip_0..zip_N binary)
+    한 번 요청에 ZIP 여러개 처리 → 네트워크 왕복 감소."""
+    import zipfile, io, json as _json
+    form = await req.form()
+    manifest_str = form.get("manifest")
+    if not manifest_str:
+        raise HTTPException(400, "manifest required")
+    manifest = _json.loads(manifest_str)
+
+    from rakuten_client import normalize_rpp_item_csv, normalize_rpp_keyword_csv
+    db = get_db()
+    results = []
+    try:
+        for i, meta in enumerate(manifest):
+            shop_id = meta.get("shop_id")
+            sel = int(meta.get("selection_type"))
+            report_date = meta.get("report_date")
+            zip_file = form.get(f"zip_{i}")
+            if not zip_file:
+                results.append({"report_date": report_date, "inserted": 0, "ok": False, "error": "no zip"})
+                continue
+            try:
+                zip_bytes = await zip_file.read()
+                with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                    csv_name = next((n for n in zf.namelist() if n.lower().endswith(".csv")), None)
+                    if not csv_name:
+                        results.append({"report_date": report_date, "inserted": 0, "ok": False, "error": "no CSV"})
+                        continue
+                    csv_bytes = zf.read(csv_name)
+                csv_text = csv_bytes.decode("cp932", errors="replace")
+                if sel == 4:
+                    norm = normalize_rpp_keyword_csv(csv_text, shop_id)
+                elif sel == 3:
+                    norm = normalize_rpp_item_csv(csv_text, shop_id)
+                else:
+                    results.append({"report_date": report_date, "inserted": 0, "ok": False, "error": f"sel {sel}"})
+                    continue
+                inserted = db.upsert_performance(norm, collected_by=user.get("sub") or user.get("email"))
+                results.append({"report_date": report_date, "inserted": inserted, "ok": True})
+            except Exception as e:
+                results.append({"report_date": report_date, "inserted": 0, "ok": False, "error": str(e)[:100]})
+    finally:
+        db.close()
+    return {"ok": True, "count": len(results), "results": results}
+
 @app.post("/api/ingest")
 async def api_ingest(req: Request, user: dict = Depends(auth_required)):
     """
