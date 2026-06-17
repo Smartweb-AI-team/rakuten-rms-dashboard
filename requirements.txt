@@ -1,6 +1,7 @@
 # Web framework (Vercel 서버리스용)
 fastapi>=0.110
 uvicorn[standard]>=0.27
+python-multipart>=0.0.9    # FastAPI multipart/form-data (확장 ZIP 배치 업로드용)
 
 # DB
 psycopg2-binary>=2.9    # Postgres (Supabase) — 로컬은 sqlite3 표준 라이브러리
