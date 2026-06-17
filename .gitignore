@@ -47,3 +47,4 @@ data/
 downloads/
 *.csv
 *.zip
+.env*
