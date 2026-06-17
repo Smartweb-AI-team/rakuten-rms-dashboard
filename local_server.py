@@ -1277,6 +1277,43 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             shop = CONFIG["shop_id"]
 
+            if path == "/api/ingest":
+                # 확장(브라우저 워커) 가 楽天 응답을 업로드 → 파싱 + DB 저장
+                # shop_id 는 확장이 楽天 쿠키에서 추출한 값을 그대로 사용 (멀티숍)
+                import base64, zipfile, io as _io
+                shop_id = body.get("shop_id") or shop
+                typ = body.get("type")
+                print(f"[ingest] shop_id={shop_id} type={typ}", flush=True)
+                inserted = 0
+                if typ == "rpp_search":
+                    from rakuten_client import normalize_rpp
+                    sel = int(body.get("selection_type"))
+                    rows = body.get("rows") or []
+                    norm = normalize_rpp(rows, shop_id, sel)
+                    inserted = get_db().upsert_performance(norm,
+                        collected_by=collector_label() if 'collector_label' in dir() else None)
+                elif typ == "rpp_download_zip":
+                    from rakuten_client import normalize_rpp_item_csv, normalize_rpp_keyword_csv
+                    sel = int(body.get("selection_type"))
+                    zip_b64 = body.get("zip_base64") or ""
+                    zip_bytes = base64.b64decode(zip_b64)
+                    with zipfile.ZipFile(_io.BytesIO(zip_bytes)) as zf:
+                        csv_name = next((n for n in zf.namelist() if n.lower().endswith(".csv")), None)
+                        if not csv_name:
+                            return self._err("ZIP no CSV", 400)
+                        csv_bytes = zf.read(csv_name)
+                    csv_text = csv_bytes.decode("cp932", errors="replace")
+                    if sel == 4:
+                        norm = normalize_rpp_keyword_csv(csv_text, shop_id)
+                    elif sel == 3:
+                        norm = normalize_rpp_item_csv(csv_text, shop_id)
+                    else:
+                        return self._err(f"unsupported sel for zip: {sel}", 400)
+                    inserted = get_db().upsert_performance(norm)
+                else:
+                    return self._err(f"unknown type: {typ}", 400)
+                return self._json({"ok": True, "inserted": inserted, "type": typ})
+
             if path == "/api/session":
                 # 확장에서 {cookies:{name:value}} 또는 {cookie_header:"a=b; c=d"} 또는
                 # {storage_state_path:"..."} 로 전송.

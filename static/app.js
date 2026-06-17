@@ -4,6 +4,7 @@
 /* ---------------- Chrome 확장 통신 (브라우저 워커) ---------------- */
 let EXT_READY = false;
 let EXT_ID = null;
+let RAKUTEN_SHOP_ID = null;  // 楽天 쿠키에서 자동 감지된 현재 shop_id
 const _extReqMap = new Map();  // reqId → resolve
 let _extReqSeq = 0;
 
@@ -22,7 +23,14 @@ window.addEventListener('message', (e) => {
     }
   }
   if (e.data.__rpp_bridge === 'event' && e.data.payload) {
-    // BACKFILL_PROGRESS 이벤트 처리 (각 핸들러는 ext_on('BACKFILL_PROGRESS', cb) 로 구독)
+    // 楽天 shop_id 자동 감지 알림
+    if (e.data.payload.type === 'RAKUTEN_SHOP_ID' && e.data.payload.shopId) {
+      RAKUTEN_SHOP_ID = e.data.payload.shopId;
+      const pillShop = document.getElementById('pill-shop');
+      if (pillShop) pillShop.textContent = `店舗 ${RAKUTEN_SHOP_ID}`;
+      console.log('[ext] rakuten shop_id =', RAKUTEN_SHOP_ID);
+    }
+    // BACKFILL_PROGRESS 이벤트 처리
     const cbs = _extEventListeners.get(e.data.payload.type) || [];
     for (const cb of cbs) try { cb(e.data.payload); } catch (_) {}
   }
@@ -568,7 +576,8 @@ $("#btn-backfill").onclick = async () => {
   // 확장 설치돼 있으면 → 브라우저 워커 사용 (로컬 속도 + 멀티숍 + 楽天 IP 통과)
   await ensureExt(1500);
   if (EXT_READY) {
-    return runBackfillViaExtension(from, to, st?.shop_id);
+    // 楽天 cookies 에서 추출된 shop_id 우선 (멀티숍). 없으면 config shop_id.
+    return runBackfillViaExtension(from, to, RAKUTEN_SHOP_ID || st?.shop_id);
   }
   // 폴백 — 서버 백필 (로컬 또는 Cloud Run)
   try {
@@ -604,14 +613,39 @@ async function runBackfillViaExtension(from, to, shopId) {
   $("#btn-backfill").disabled = true; $("#btn-refill").disabled = true;
   $("#btn-backfill-cancel").style.display = "";
   toast(`取得開始（ブラウザワーカー）— 進捗を確認できます。`, "ok");
-
-  // 진행률 listener
-  ext_on('BACKFILL_PROGRESS', (info) => {
-    if (info.taskId !== taskId) return;
-    $("#bf-status").innerHTML = `${info.done ? '完了' : '取得中 ' + escapeHtml(info.current || '')} · 成功 ${info.ok || 0} / 失敗 ${info.failed || 0} · 累計 ${fmt(info.rows || 0)}件`;
+  const startTs = Date.now();
+  let lastProgress = { ok: 0, failed: 0, rows: 0, totals: {}, current: '', log: [], done: false };
+  // 매 초 시간만 새로 그림 (extension progress event 없는 사이에도)
+  const tickTimer = setInterval(() => {
+    if (lastProgress.done) { clearInterval(tickTimer); return; }
+    renderBackfillStatus(lastProgress, Math.floor((Date.now() - startTs) / 1000));
+  }, 1000);
+  function renderBackfillStatus(info, elapsedOverride) {
+    const fmtTime = (sec) => {
+      sec = sec || 0;
+      const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+      return (h ? `${h}時間` : "") + (m || h ? `${m}分` : "") + `${s}秒`;
+    };
+    const elapsed = elapsedOverride !== undefined ? elapsedOverride : (info.elapsed_seconds || 0);
+    // 진행 바
+    const pct = info.progress_pct != null ? info.progress_pct
+              : (info.total_count ? Math.floor((info.done_count || 0) / info.total_count * 100) : 0);
+    $("#bf-bar").style.width = pct + "%";
+    const counter = info.total_count ? `${info.done_count || 0}/${info.total_count}` : `${info.ok || 0}成功`;
+    const timeChip = `<span class="bf-time">⏱ 経過 <b>${fmtTime(elapsed)}</b></span>`;
+    $("#bf-status").innerHTML = `${info.done ? '完了' : '取得中 ' + escapeHtml(info.current || '')} · ${counter} · 成功 ${info.ok || 0} / 失敗 ${info.failed || 0} · 累計 ${fmt(info.rows || 0)}件 · ${timeChip}`;
     const totals = info.totals || {};
     $("#bf-totals").innerHTML = Object.entries(totals)
       .map(([k, v]) => `<span class="t">${k} <b>${fmt(v)}</b></span>`).join("");
+    $("#bf-log").innerHTML = (info.log || []).slice().reverse()
+      .map(l => `<div class="${l.includes('失敗') || l.includes('エラー') ? 'fail' : ''}">${escapeHtml(l)}</div>`).join("");
+  }
+
+  // 진행률 listener — 들어온 정보 캐시, 매초 tick은 위에서 처리
+  ext_on('BACKFILL_PROGRESS', (info) => {
+    if (info.taskId !== taskId) return;
+    lastProgress = { ...lastProgress, ...info };
+    renderBackfillStatus(lastProgress, Math.floor((Date.now() - startTs) / 1000));
     if (info.done) {
       $("#btn-backfill").disabled = false; $("#btn-refill").disabled = false;
       $("#btn-backfill-cancel").style.display = "none";
