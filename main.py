@@ -220,15 +220,37 @@ def _parse_common(kw: dict) -> dict:
         "user":           True,  # auth_required 통과한 상태 (라우트가 호출되면)
     }
 
+def _pct(cur, prev):
+    if prev in (None, 0): return None
+    try: return round((cur - prev) / prev * 100, 1)
+    except: return None
+
 @app.get("/api/kpis")
 def api_kpis(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
     cfg = get_config(); db = get_db()
-    r = db.kpis(cfg.get("shop_id", ""), p["from"], p["to"],
-                ad_product=p["product"], selection_type=p["selection_type"],
-                user_segment=p["segment"], cv_window=p["window"])
+    shop = cfg.get("shop_id", "")
+    cur = db.kpis(shop, p["from"], p["to"], ad_product=p["product"],
+                  selection_type=p["selection_type"],
+                  user_segment=p["segment"], cv_window=p["window"])
+    # 비교 기간 자동 계산 (같은 길이의 직전 기간)
+    days = (date.fromisoformat(p["to"]) - date.fromisoformat(p["from"])).days + 1
+    prev_to = (date.fromisoformat(p["from"]) - timedelta(days=1)).isoformat()
+    prev_from = (date.fromisoformat(prev_to) - timedelta(days=days - 1)).isoformat()
+    prev = db.kpis(shop, prev_from, prev_to, ad_product=p["product"],
+                   selection_type=p["selection_type"],
+                   user_segment=p["segment"], cv_window=p["window"])
+    deltas = {k: _pct(cur.get(k), prev.get(k))
+              for k in ("ad_cost", "gms", "clicks", "cv", "roas", "cpc")}
     db.conn.close()
-    return r
+    return {
+        "current": cur, "previous": prev,
+        "previous_range": {"from": prev_from, "to": prev_to},
+        "deltas": deltas,
+        "movers": [], "bullets": [], "actions": [],
+        "headline": "", "narrative": "", "note": "",
+        "impressions_last_date": None,
+    }
 
 @app.get("/api/series")
 def api_series(req: Request, _u: dict = Depends(auth_required)):
