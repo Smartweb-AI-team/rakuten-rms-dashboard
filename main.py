@@ -316,7 +316,7 @@ def api_jobs(_u: dict = Depends(auth_required)):
 
 @app.post("/api/backfill/cancel")
 async def api_backfill_cancel(_u: dict = Depends(auth_required)):
-    """진행 중/대기 중인 모든 백필 job 을 'cancelled' 로 표시."""
+    """진행 중/대기 중인 모든 백필 job 을 'cancelled' 로 표시 + 워커에 cancel 신호."""
     db = get_db()
     cancelled = 0
     for j in db.list_download_jobs(limit=50):
@@ -324,6 +324,10 @@ async def api_backfill_cancel(_u: dict = Depends(auth_required)):
             db.update_download_job(j["id"], status="cancelled",
                                    error_msg="ユーザーがキャンセル")
             cancelled += 1
+    # KV 의 진행률에 cancel 플래그 → 워커가 chunk 사이/pipeline 내부에서 감지하고 중단
+    prog = db.kv_get("backfill_progress", {}) or {}
+    prog["cancel"] = True
+    db.kv_set("backfill_progress", prog)
     db.conn.close()
     return {"ok": True, "cancelled": cancelled}
 
@@ -429,10 +433,25 @@ def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
             db.update_download_job(job_id, status="failed", error_msg=prog["error"])
             return
 
+        def _is_cancelled() -> bool:
+            try:
+                d2 = get_db()
+                p2 = d2.kv_get("backfill_progress", {}) or {}
+                d2.conn.close()
+                return bool(p2.get("cancel"))
+            except Exception:
+                return False
+
         # ============ STEP 1: sel=1/2 월별 range (빠름) ============
         for cs, ce in rpp_chunks:
+            if _is_cancelled():
+                log("CANCELLED by user")
+                prog["log"].append("⏹ ユーザーキャンセル")
+                break
             label_chunk = cs.strftime("%Y-%m")
             for sel, sel_label in ((SEL_ALL, "全体広告"), (SEL_CAMPAIGN, "キャンペーン別")):
+                if _is_cancelled():
+                    break
                 prog["current"] = f"{label_chunk} · {sel_label}"
                 prog["elapsed_seconds"] = int(_t.time() - t0)
                 _save_progress(prog)
@@ -454,7 +473,7 @@ def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
                 _save_progress(prog)
 
         # ============ STEP 2: sel=3/4 일별 pipeline (4-parallel) ============
-        if day_jobs:
+        if day_jobs and not _is_cancelled():
             log(f"pipeline starting: {len(day_jobs)} day-jobs (4-parallel)")
             done_in_pipe = [0]
             def _progress_cb(done_now, total_now):
@@ -469,7 +488,8 @@ def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
                     max_concurrent=4,
                     poll_interval=5.0,
                     max_wait=max(7200.0, len(day_jobs) * 60.0),
-                    progress_cb=_progress_cb)
+                    progress_cb=_progress_cb,
+                    cancel_cb=_is_cancelled)
                 for (sel, rt, st_iso, ed_iso), csv_text in csvs.items():
                     if not csv_text:
                         prog["failed"] += 1
