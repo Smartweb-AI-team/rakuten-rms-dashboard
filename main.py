@@ -274,7 +274,7 @@ def api_top(req: Request, _u: dict = Depends(auth_required)):
                           order_by=qp.get("order_by", "ad_cost"),
                           limit=int(qp.get("limit", 10)))
     db.conn.close()
-    return r
+    return {"rows": r}
 
 @app.get("/api/data")
 def api_data(req: Request, _u: dict = Depends(auth_required)):
