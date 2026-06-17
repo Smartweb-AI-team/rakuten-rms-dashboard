@@ -334,102 +334,125 @@ async def api_backfill_reset(_u: dict = Depends(auth_required)):
 
 @app.get("/api/backfill/status")
 def api_backfill_status(_u: dict = Depends(auth_required)):
+    """워커가 app_kv 의 'backfill_progress' 에 저장한 실시간 진행률을 그대로 반환."""
     db = get_db()
-    jobs = db.list_download_jobs(status=None, limit=1)
+    prog = db.kv_get("backfill_progress", {}) or {}
     db.conn.close()
     base = {"running": False, "done": 0, "total": 0, "ok": 0, "failed": 0,
             "rows": 0, "elapsed_seconds": 0, "totals": {}, "skips": {},
             "notes": [], "log": [], "current": "", "error": None}
-    if not jobs:
-        return base
-    j = jobs[0]
-    running = j["status"] in ("pending", "registered")
-    # 경과 시간 — created_at 부터 (running 중) 또는 updated_at 까지 (완료)
-    from datetime import datetime as _dt, timezone as _tz
+    return {**base, **prog}
+
+PRODUCT_LABELS = [("RPP_sel1", "全体広告"), ("RPP_sel2", "キャンペーン別"),
+                  ("RPP_item", "商品別"), ("RPP_keyword", "キーワード別"),
+                  ("CPA_rows", "CPA"), ("TDA_rows", "TDA")]
+
+def _month_chunks(start: date, end: date):
+    chunks, s = [], start
+    while s <= end:
+        nxt = date(s.year + 1, 1, 1) if s.month == 12 else date(s.year, s.month + 1, 1)
+        chunks.append((s, min(end, nxt - timedelta(days=1))))
+        s = nxt
+    return chunks
+
+def _save_progress(prog: dict):
+    """진행률을 app_kv 에 저장 (status 엔드포인트가 읽음)."""
     try:
-        created = j.get("created_at")
-        if isinstance(created, str):
-            created = _dt.fromisoformat(created.replace("Z", "+00:00"))
-        end_ref = _dt.now(_tz.utc) if running else (
-            _dt.fromisoformat(str(j.get("updated_at")).replace("Z", "+00:00"))
-            if j.get("updated_at") else _dt.now(_tz.utc))
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=_tz.utc)
-        if end_ref.tzinfo is None:
-            end_ref = end_ref.replace(tzinfo=_tz.utc)
-        elapsed = int((end_ref - created).total_seconds())
-    except Exception:
-        elapsed = 0
-
-    log_lines = []
-    if j.get("error_msg"):
-        log_lines.append(f"[{j['status']}] {j['error_msg']}")
-
-    return {
-        **base,
-        "running": running,
-        "current": j.get("status") or "",
-        "total": 1, "done": 0 if running else 1,
-        "ok": 0 if running else (1 if j["status"] == "completed" else 0),
-        "failed": 0 if running else (1 if j["status"] == "failed" else 0),
-        "rows": j.get("normalized_rows") or 0,
-        "elapsed_seconds": elapsed,
-        "log": log_lines,
-        "error": j.get("error_msg") if j["status"] in ("failed", "cancelled") else None,
-        "job_id": j["id"],
-        "status": j["status"],
-    }
+        db = get_db()
+        db.kv_set("backfill_progress", prog)
+        db.conn.close()
+    except Exception as e:
+        print(f"[backfill] _save_progress fail: {e}", flush=True)
 
 def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
-    """Cloud Run 워커가 백그라운드에서 실행하는 실 백필 작업."""
-    import sys, traceback
+    """Cloud Run 워커: 로컬 run_backfill과 동등 동작 — 월별 chunk + 진행률 KV 저장."""
+    import sys, traceback, time as _t
     def log(msg):
         print(f"[backfill #{job_id}] {msg}", flush=True)
-    log(f"START shop={shop_id} {frm}~{to}")
+
+    t0 = _t.time()
+    start = date.fromisoformat(frm)
+    end = date.fromisoformat(to)
+    chunks = _month_chunks(start, end)
+
+    prog = {
+        "running": True, "total": len(chunks), "done": 0,
+        "ok": 0, "failed": 0, "rows": 0, "current": "",
+        "totals": {lbl: 0 for _, lbl in PRODUCT_LABELS},
+        "skips": {}, "notes": [], "log": [], "error": None,
+        "started_at": t0, "elapsed_seconds": 0,
+        "from": frm, "to": to, "job_id": job_id,
+    }
+    _save_progress(prog)
+    log(f"START shop={shop_id} {frm}~{to} ({len(chunks)} months)")
+
     db = get_db()
     try:
         from rakuten_client import RakutenAdClient
         from collector import collect_range
         cookies = get_session_cookies()
-        log(f"cookies loaded: {len(cookies)} items")
+        log(f"cookies: {len(cookies)} items")
         flat = {c["name"]: c["value"] for c in cookies if c.get("name")}
         if "XSRF-TOKEN" not in flat:
-            log("FAILED: no XSRF-TOKEN")
-            db.update_download_job(job_id, status="failed",
-                                   error_msg="楽天セッション無効: 拡張機能でCookie再送信が必要")
-            db.conn.close(); return
-        db.update_download_job(job_id, status="registered",
-                               error_msg=f"started at {datetime.now().isoformat(timespec='seconds')}")
+            prog["error"] = "楽天セッション無効: 拡張機能でCookie再送信"; prog["running"] = False
+            _save_progress(prog)
+            db.update_download_job(job_id, status="failed", error_msg=prog["error"])
+            return
+        db.update_download_job(job_id, status="registered")
         client = RakutenAdClient(cookies)
-        log("checking 楽天 session...")
-        # session check 분리 — 여기서 막히면 알 수 있음
-        try:
-            session_ok = client.check_session()
-            log(f"session check: {session_ok}")
-        except Exception as se:
-            log(f"session check FAILED: {se}")
-            db.update_download_job(job_id, status="failed",
-                                   error_msg=f"楽天session check: {str(se)[:300]}")
-            db.conn.close(); return
-        if not session_ok:
-            db.update_download_job(job_id, status="failed",
-                                   error_msg="楽天セッション切れ: Cookie 再送信が必要")
-            db.conn.close(); return
-        start, end = date.fromisoformat(frm), date.fromisoformat(to)
-        log(f"collect_range starting {start}~{end}")
-        rep = collect_range(client, db, shop_id, start, end)
-        log(f"collect_range DONE: {rep}")
-        db.update_download_job(job_id, status="completed",
-                               normalized_rows=sum(v for k, v in rep.items() if isinstance(v, int)),
-                               error_msg=f"completed: RPP_sel1={rep.get('RPP_sel1',0)} RPP_sel2={rep.get('RPP_sel2',0)} skipped={rep.get('skipped_calls',0)}")
+        if not client.check_session():
+            prog["error"] = "楽天セッション切れ"; prog["running"] = False
+            _save_progress(prog)
+            db.update_download_job(job_id, status="failed", error_msg=prog["error"])
+            return
+
+        for cs, ce in chunks:
+            label = cs.strftime("%Y-%m")
+            prog["current"] = label
+            prog["elapsed_seconds"] = int(_t.time() - t0)
+            _save_progress(prog)
+            log(f"chunk {label} ({cs}~{ce})")
+            try:
+                rep = collect_range(client, db, shop_id, cs, ce)
+                for key, lbl in PRODUCT_LABELS:
+                    prog["totals"][lbl] += rep.get(key, 0)
+                for reason, cnt in rep.get("skips", {}).items():
+                    prog["skips"][reason] = prog["skips"].get(reason, 0) + cnt
+                for note in rep.get("notes", []):
+                    if note not in prog["notes"]:
+                        prog["notes"].append(note)
+                n = (rep["RPP_sel1"] + rep["RPP_sel2"] + rep["RPP_item"]
+                     + rep.get("RPP_keyword", 0) + rep["CPA_rows"] + rep["TDA_rows"])
+                if n > 0:
+                    prog["ok"] += 1; prog["rows"] += n
+                    extra = f"（一部未取得 {rep['skipped_calls']}件）" if rep.get("skipped_calls") else ""
+                    prog["log"].append(f"{label}: {n}件{extra}")
+                    log(f"  {label}: {n} rows")
+                else:
+                    prog["failed"] += 1
+                    prog["log"].append(f"{label}: スキップ（データなし）")
+                    log(f"  {label}: 0 rows (skipped)")
+            except Exception as e:
+                prog["failed"] += 1
+                prog["log"].append(f"{label}: 失敗（{str(e)[:70]}）")
+                log(f"  {label}: FAILED {e}")
+            prog["done"] += 1
+            prog["log"] = prog["log"][-300:]
+            prog["elapsed_seconds"] = int(_t.time() - t0)
+            _save_progress(prog)
+
+        db.update_download_job(job_id, status="completed", normalized_rows=prog["rows"])
+        log(f"DONE total_rows={prog['rows']} ok={prog['ok']} failed={prog['failed']}")
     except Exception as e:
         log(f"EXCEPTION: {e}")
         traceback.print_exc(file=sys.stdout)
-        try:
-            db.update_download_job(job_id, status="failed", error_msg=str(e)[:500])
-        except Exception:
-            pass
+        prog["error"] = str(e)[:300]
+        db.update_download_job(job_id, status="failed", error_msg=str(e)[:500])
     finally:
+        prog["running"] = False
+        prog["current"] = ""
+        prog["elapsed_seconds"] = int(_t.time() - t0)
+        _save_progress(prog)
         try: db.conn.close()
         except: pass
         log("END")
