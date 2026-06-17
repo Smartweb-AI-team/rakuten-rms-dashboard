@@ -18,7 +18,11 @@ from db import DB
 # 검증된 라쿠텐 RMS 조회 제약 (2026-06-08 실측)
 ALL_MAX_MONTHS = 3        # 전체/캠페인: 한 요청 최대 3개월 (period=2, 일별로 반환)
 CPA_TDA_MAX_MONTHS = 3    # CPA/TDA: 한 요청 최대 3개월
-ITEM_HISTORY_DAYS = 760   # 상품/키워드: 약 2년까지만 (여유 margin 포함; 초과분은 400→자동 스킵)
+
+def _two_years_first_day(today: date | None = None) -> date:
+    """오늘 기준 2년 전 그 달의 1일. (예: 2026-06-17 → 2024-06-01)"""
+    t = today or date.today()
+    return date(t.year - 2, t.month, 1)
 
 
 def _month_chunks(start: date, end: date, n_months: int):
@@ -116,15 +120,21 @@ def collect_range(client: RakutenAdClient, db: DB, shop_id: str,
             return 0
 
     # 1) 전체 + 캠페인: period=2(일별), 최대 3개월 범위로 한 번에
+    # 모든 sel 통일: 2년 전 1일까지만 (2024-06-01 같은 기준)
+    cutoff_2y = _two_years_first_day()
+    capped_start = max(start, cutoff_2y)
+    if start < cutoff_2y:
+        report["notes"].append(
+            f"全広告: {cutoff_2y.isoformat()} より前は2年保存上限のため取得対象外")
     for sel, key, label in ((SEL_ALL, "RPP_sel1", "全体広告"),
                             (SEL_CAMPAIGN, "RPP_sel2", "キャンペーン別")):
-        for cs, ce in _month_chunks(start, end, ALL_MAX_MONTHS):
+        for cs, ce in _month_chunks(capped_start, end, ALL_MAX_MONTHS):
             report[key] += guard(label, lambda cs=cs, ce=ce, sel=sel: db.upsert_performance(
                 normalize_rpp(client.fetch_rpp(cs, ce, selection_type=sel, period_type=PERIOD_DAY),
                               shop_id, sel)), ctx_date=cs)
 
     # 2) 상품별 + 키워드별: period=0(전체기간)을 '하루씩'(d~d) 찍어 일별화. 최근 약 2년만.
-    item_cutoff = date.today() - timedelta(days=ITEM_HISTORY_DAYS)
+    item_cutoff = _two_years_first_day()
     istart = max(start, item_cutoff)
     # 라쿠텐은 「오늘 이후」 일자 거부 → 어제까지로 제한
     yesterday = date.today() - timedelta(days=1)

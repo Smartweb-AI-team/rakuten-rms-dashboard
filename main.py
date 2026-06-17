@@ -183,6 +183,55 @@ def api_status(user: dict = Depends(auth_required)):
         "yesterday": (today - timedelta(days=1)).isoformat(),
     }
 
+@app.post("/api/ingest")
+async def api_ingest(req: Request, user: dict = Depends(auth_required)):
+    """
+    확장(브라우저 워커) → Vercel/Cloud Run 로 楽天 응답 업로드.
+    body:
+      type: 'rpp_search'         → {rows: [...]} (sel=1/2 의 search JSON)
+      type: 'rpp_download_zip'   → {zip_base64, selection_type, report_date}
+    """
+    import base64, zipfile, io
+    body = await req.json()
+    shop_id = body.get("shop_id")
+    if not shop_id:
+        raise HTTPException(400, "shop_id required")
+    typ = body.get("type")
+
+    db = get_db()
+    inserted = 0
+    try:
+        if typ == "rpp_search":
+            from rakuten_client import normalize_rpp
+            sel = int(body.get("selection_type"))
+            rows = body.get("rows") or []
+            norm = normalize_rpp(rows, shop_id, sel)
+            inserted = db.upsert_performance(norm, collected_by=user.get("sub") or user.get("email"))
+        elif typ == "rpp_download_zip":
+            from rakuten_client import normalize_rpp_item_csv, normalize_rpp_keyword_csv
+            sel = int(body.get("selection_type"))
+            zip_b64 = body.get("zip_base64") or ""
+            zip_bytes = base64.b64decode(zip_b64)
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                # 첫 .csv 파일 추출
+                csv_name = next((n for n in zf.namelist() if n.lower().endswith(".csv")), None)
+                if not csv_name:
+                    raise HTTPException(400, "ZIP no CSV")
+                csv_bytes = zf.read(csv_name)
+            csv_text = csv_bytes.decode("cp932", errors="replace")
+            if sel == 4:
+                norm = normalize_rpp_keyword_csv(csv_text, shop_id)
+            elif sel == 3:
+                norm = normalize_rpp_item_csv(csv_text, shop_id)
+            else:
+                raise HTTPException(400, f"unsupported sel for zip: {sel}")
+            inserted = db.upsert_performance(norm, collected_by=user.get("sub") or user.get("email"))
+        else:
+            raise HTTPException(400, f"unknown type: {typ}")
+    finally:
+        db.close()
+    return {"ok": True, "inserted": inserted, "type": typ}
+
 @app.post("/api/session")
 async def api_session(req: Request, _u: dict = Depends(auth_session_or_ext)):
     """확장(브라우저) → 楽天 쿠키 수신."""

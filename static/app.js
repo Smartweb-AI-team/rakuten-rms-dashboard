@@ -1,6 +1,62 @@
 "use strict";
 // 広告ダッシュボード フロントエンド (依存なし)
 
+/* ---------------- Chrome 확장 통신 (브라우저 워커) ---------------- */
+let EXT_READY = false;
+let EXT_ID = null;
+const _extReqMap = new Map();  // reqId → resolve
+let _extReqSeq = 0;
+
+window.addEventListener('message', (e) => {
+  if (e.source !== window || !e.data || typeof e.data !== 'object') return;
+  if (e.data.__rpp_bridge === 'ready') {
+    EXT_READY = true;
+    EXT_ID = e.data.extensionId;
+    console.log('[ext] ready, id=', EXT_ID);
+  }
+  if (e.data.__rpp_bridge === 'response') {
+    const resolve = _extReqMap.get(e.data.reqId);
+    if (resolve) {
+      _extReqMap.delete(e.data.reqId);
+      resolve(e.data.response || (e.data.error ? { error: e.data.error } : null));
+    }
+  }
+  if (e.data.__rpp_bridge === 'event' && e.data.payload) {
+    // BACKFILL_PROGRESS 이벤트 처리 (각 핸들러는 ext_on('BACKFILL_PROGRESS', cb) 로 구독)
+    const cbs = _extEventListeners.get(e.data.payload.type) || [];
+    for (const cb of cbs) try { cb(e.data.payload); } catch (_) {}
+  }
+});
+const _extEventListeners = new Map();
+function ext_on(eventType, cb) {
+  if (!_extEventListeners.has(eventType)) _extEventListeners.set(eventType, []);
+  _extEventListeners.get(eventType).push(cb);
+}
+async function ext_call(payload) {
+  if (!EXT_READY) throw new Error('拡張機能が見つかりません');
+  return new Promise(resolve => {
+    const reqId = ++_extReqSeq;
+    _extReqMap.set(reqId, resolve);
+    window.postMessage({ __rpp_bridge: 'request', reqId, payload }, '*');
+    setTimeout(() => {
+      if (_extReqMap.has(reqId)) {
+        _extReqMap.delete(reqId);
+        resolve({ error: 'timeout' });
+      }
+    }, 30000);
+  });
+}
+// 페이지 로드 시 확장 ready 기다림 (1.5초)
+function ensureExt(maxMs = 1500) {
+  return new Promise(resolve => {
+    if (EXT_READY) return resolve(true);
+    const t = setInterval(() => {
+      if (EXT_READY) { clearInterval(t); resolve(true); }
+    }, 50);
+    setTimeout(() => { clearInterval(t); resolve(EXT_READY); }, maxMs);
+  });
+}
+
 /* ---------------- 인증 (Supabase Auth) ---------------- */
 let AUTH_CFG = null;
 
@@ -506,12 +562,21 @@ $("#btn-backfill").onclick = async () => {
   const fm = $("#bf-from").value, tm = $("#bf-to").value;
   if (!fm || !tm) return toast("開始月／終了月を選択してください", true);
   const from = fm + "-01", to = lastDayOfMonth(tm);
-  // 세션 확인 — 만료 상태면 진행 자체를 막아 오해 방지
   const st = await api.get("/api/status").catch(() => null);
-  if (st && !st.session) return toast("セッションが無効です — 拡張機能の「🍪 Cookieを送信」を押してから再実行してください", true);
+  if (st && !st.session) return toast("セッションが無効です — 拡張機能の「Cookieを送信」を押してから再実行してください", true);
+
+  // 확장 설치돼 있으면 → 브라우저 워커 사용 (로컬 속도 + 멀티숍 + 楽天 IP 통과)
+  await ensureExt(1500);
+  if (EXT_READY) {
+    return runBackfillViaExtension(from, to, st?.shop_id);
+  }
+  // 폴백 — 서버 백필 (로컬 또는 Cloud Run)
   try {
     const r = await api.post("/api/backfill", { from, to });
-    if (!r.ok) {
+    // 로컬 local_server.py: {started: true, months}
+    // Vercel 신: {ok: true, started: true, months, debug}
+    // forward 실패 시: {ok: false, error, debug}
+    if (r.ok === false) {
       const dbg = JSON.stringify(r.debug || {}, null, 2);
       console.error("[backfill] forward failed:", r);
       alert(`一括取得の開始に失敗\n\nエラー: ${r.error}\n\nデバッグ:\n${dbg}`);
@@ -528,6 +593,45 @@ $("#btn-backfill").onclick = async () => {
   } catch (e) { toast("一括取得の開始に失敗: " + e.message, true); }
 };
 $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/cancel", {}); toast("キャンセルを要求しました"); };
+
+// 확장 워커로 백필 실행 (브라우저 = 본인 楽天 세션 직접 사용)
+async function runBackfillViaExtension(from, to, shopId) {
+  const cfg = await loadAuthConfig();
+  const vercelUrl = window.location.origin;
+  const jwt = localStorage.getItem("sb_access_token") || "";
+  const taskId = "bf_" + Date.now();
+  $("#bf-progress").classList.remove("hidden");
+  $("#btn-backfill").disabled = true; $("#btn-refill").disabled = true;
+  $("#btn-backfill-cancel").style.display = "";
+  toast(`取得開始（ブラウザワーカー）— 進捗を確認できます。`, "ok");
+
+  // 진행률 listener
+  ext_on('BACKFILL_PROGRESS', (info) => {
+    if (info.taskId !== taskId) return;
+    $("#bf-status").innerHTML = `${info.done ? '完了' : '取得中 ' + escapeHtml(info.current || '')} · 成功 ${info.ok || 0} / 失敗 ${info.failed || 0} · 累計 ${fmt(info.rows || 0)}件`;
+    const totals = info.totals || {};
+    $("#bf-totals").innerHTML = Object.entries(totals)
+      .map(([k, v]) => `<span class="t">${k} <b>${fmt(v)}</b></span>`).join("");
+    if (info.done) {
+      $("#btn-backfill").disabled = false; $("#btn-refill").disabled = false;
+      $("#btn-backfill-cancel").style.display = "none";
+      if (info.error) toast("エラー: " + info.error, true);
+      else toast(`完了 — ${fmt(info.rows || 0)}件 取得`, "ok");
+      loadStatus(); loadCoverage();
+    }
+  });
+
+  const r = await ext_call({
+    type: 'START_BACKFILL',
+    taskId, shop_id: shopId, from, to,
+    vercelUrl, jwt,
+  });
+  if (r?.error) {
+    toast("拡張機能エラー: " + r.error, true);
+    $("#btn-backfill").disabled = false; $("#btn-refill").disabled = false;
+    $("#btn-backfill-cancel").style.display = "none";
+  }
+}
 async function pollBackfill() {
   clearTimeout(bfTimer);
   let s;
