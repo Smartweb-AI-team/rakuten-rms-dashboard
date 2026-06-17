@@ -384,9 +384,14 @@ async def api_backfill(req: Request, bg: BackgroundTasks, _u: dict = Depends(aut
     job_id = db.add_download_job(shop, 0, 0, "backfill", frm, to_)
     db.conn.close()
 
+    # 개월 수 (UI 표시용)
+    from datetime import date as _d
+    months = ((_d.fromisoformat(to_).year - _d.fromisoformat(frm).year) * 12 +
+              (_d.fromisoformat(to_).month - _d.fromisoformat(frm).month) + 1)
+
     if IS_WORKER:
         bg.add_task(_do_backfill_worker, job_id, frm, to_, shop)
-        return {"ok": True, "job_id": job_id, "status": "started", "where": "worker"}
+        return {"ok": True, "started": True, "job_id": job_id, "months": months, "where": "worker"}
 
     # Vercel → Cloud Run forward
     if not WORKER_URL:
@@ -408,7 +413,7 @@ async def api_backfill(req: Request, bg: BackgroundTasks, _u: dict = Depends(aut
         pass  # 워커는 백그라운드로 계속 실행됨 — 정상
     except Exception as e:
         raise HTTPException(503, f"ワーカー呼出失敗: {str(e)[:200]}")
-    return {"ok": True, "job_id": job_id, "status": "forwarded", "where": "vercel→worker"}
+    return {"ok": True, "started": True, "job_id": job_id, "months": months, "where": "vercel→worker"}
 
 @app.post("/api/collect")
 async def api_collect(req: Request, _u: dict = Depends(auth_required)):
