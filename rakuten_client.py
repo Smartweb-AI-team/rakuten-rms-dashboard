@@ -224,6 +224,40 @@ class RakutenAdClient:
             "Origin": BASE,
             "User-Agent": "Mozilla/5.0",
         })
+        # 응답마다 set-cookie 에서 새 XSRF-TOKEN 자동 추출 → 다음 요청에 반영
+        self.s.hooks["response"].append(self._refresh_xsrf_from_response)
+        # 모든 POST/GET 를 wrap: 403 시 새 XSRF 갱신하고 1회 자동 재시도
+        _orig_request = self.s.request
+        def _request_with_retry(method, url, **kw):
+            r = _orig_request(method, url, **kw)
+            if r.status_code == 403 and method.upper() == "POST":
+                # response hook 이 새 XSRF 캡처 → 헤더 다시 만들어서 재시도
+                from urllib.parse import urlparse
+                req_path = urlparse(url).path or "/"
+                if "headers" in kw and kw["headers"] is not None:
+                    new_h = dict(kw["headers"])
+                else:
+                    new_h = {}
+                try:
+                    new_h["X-XSRF-TOKEN"] = self._xsrf(req_path)
+                    kw["headers"] = new_h
+                    r = _orig_request(method, url, **kw)
+                except Exception:
+                    pass
+            return r
+        self.s.request = _request_with_retry
+
+    def _refresh_xsrf_from_response(self, r, *args, **kwargs):
+        """응답 헤더에 set-cookie: XSRF-TOKEN=...; Path=/xxx 있으면 path별 토큰 갱신."""
+        for sc in r.headers.get_list("set-cookie") if hasattr(r.headers, "get_list") else [r.headers.get("set-cookie", "")]:
+            if not sc or "XSRF-TOKEN=" not in sc:
+                continue
+            import re as _re
+            mv = _re.search(r"XSRF-TOKEN=([^;]+)", sc)
+            mp = _re.search(r";\s*Path=([^;]+)", sc, _re.IGNORECASE)
+            if mv:
+                path = (mp.group(1).strip() if mp else "/")
+                self._xsrf_by_path[path] = mv.group(1)
 
     def set_cookies(self, cookies) -> None:
         if isinstance(cookies, dict):
@@ -237,6 +271,13 @@ class RakutenAdClient:
                 continue
             path = c.get("path") or "/"
             domain = c.get("domain") or ".rakuten.co.jp"
+            # XSRF-TOKEN 은 RMS 어느 서브도메인에 적용되든 .rakuten.co.jp 로 통일.
+            # 楽天 의 CSRF 검증은 「헤더 X-XSRF-TOKEN ↔ 쿠키 XSRF-TOKEN」 매칭이라
+            # 쿠키가 더 좁은 도메인(예: room.rms.rakuten.co.jp)에 묶여 ad.rms 호출에
+            # 첨부 안 되면 POST 가 모두 403 으로 차단됨.
+            if name == "XSRF-TOKEN":
+                domain = ".rakuten.co.jp"
+                path = "/"
             try:
                 self.s.cookies.set(name, value, domain=domain, path=path)
             except Exception:
@@ -268,6 +309,23 @@ class RakutenAdClient:
 
     def _headers(self, req_path: str = "/") -> dict:
         return {"X-XSRF-TOKEN": self._xsrf(req_path)}
+
+    def _post_with_xsrf_retry(self, url: str, req_path: str, **kwargs):
+        """POST 시 403 이면 응답에서 새 XSRF 추출 (response hook 이 한 작업) → 재시도 1회.
+        라쿠텐은 path별 XSRF 가 갱신될 때 첫 요청에서 403 + 새 토큰 발급 패턴."""
+        if "headers" in kwargs:
+            kwargs["headers"] = {**self._headers(req_path), **kwargs["headers"]}
+        else:
+            kwargs["headers"] = self._headers(req_path)
+        r = self.s.post(url, **kwargs)
+        if r.status_code == 403:
+            # response hook 이 set-cookie 에서 새 XSRF 캡처했을 것. 헤더 갱신 후 재시도
+            try:
+                kwargs["headers"]["X-XSRF-TOKEN"] = self._xsrf(req_path)
+            except Exception:
+                pass
+            r = self.s.post(url, **kwargs)
+        return r
 
     def check_session(self) -> bool:
         """세션 유효성 간단 확인 (RPP top 호출)."""
