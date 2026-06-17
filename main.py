@@ -205,67 +205,84 @@ def api_coverage(_u: dict = Depends(auth_required)):
     db.conn.close()
     return {"coverage": cov}
 
+def _parse_common(kw: dict) -> dict:
+    """프론트가 보내는 짧은 이름 (from, to, product, window, segment) 정규화."""
+    return {
+        "from":           kw.get("from") or kw.get("date_from"),
+        "to":             kw.get("to") or kw.get("date_to"),
+        "product":        kw.get("product") or kw.get("ad_product") or "RPP",
+        "window":         kw.get("window") or kw.get("cv_window") or "720h",
+        "segment":        kw.get("segment") or kw.get("user_segment") or "all",
+        "selection_type": int(kw.get("selection_type", 1)),
+        "order_by":       kw.get("order_by", "report_date"),
+        "desc":           str(kw.get("desc", "")).lower() == "true",
+        "limit":          int(kw.get("limit", 500)),
+        "user":           True,  # auth_required 통과한 상태 (라우트가 호출되면)
+    }
+
 @app.get("/api/kpis")
-def api_kpis(date_from: str, date_to: str, ad_product: str = "RPP",
-             selection_type: int = 1, user_segment: str = "all",
-             cv_window: str = "720h", _u: dict = Depends(auth_required)):
-    cfg = get_config()
-    db = get_db()
-    r = db.kpis(cfg.get("shop_id", ""), date_from, date_to,
-                ad_product=ad_product, selection_type=selection_type,
-                user_segment=user_segment, cv_window=cv_window)
+def api_kpis(req: Request, _u: dict = Depends(auth_required)):
+    p = _parse_common(dict(req.query_params))
+    cfg = get_config(); db = get_db()
+    r = db.kpis(cfg.get("shop_id", ""), p["from"], p["to"],
+                ad_product=p["product"], selection_type=p["selection_type"],
+                user_segment=p["segment"], cv_window=p["window"])
     db.conn.close()
     return r
 
 @app.get("/api/series")
-def api_series(date_from: str, date_to: str, ad_product: str = "RPP",
-               selection_type: int = 1, user_segment: str = "all",
-               cv_window: str = "720h", _u: dict = Depends(auth_required)):
-    cfg = get_config()
-    db = get_db()
-    r = db.daily_series(cfg.get("shop_id", ""), date_from, date_to,
-                        ad_product=ad_product, selection_type=selection_type,
-                        user_segment=user_segment, cv_window=cv_window)
+def api_series(req: Request, _u: dict = Depends(auth_required)):
+    p = _parse_common(dict(req.query_params))
+    cfg = get_config(); db = get_db()
+    r = db.daily_series(cfg.get("shop_id", ""), p["from"], p["to"],
+                        ad_product=p["product"], selection_type=p["selection_type"],
+                        user_segment=p["segment"], cv_window=p["window"])
     db.conn.close()
-    return r
+    return {"series": r}
 
 @app.get("/api/top")
-def api_top(date_from: str, date_to: str, ad_product: str = "RPP",
-            selection_type: int = 2, user_segment: str = "all",
-            cv_window: str = "720h", order_by: str = "ad_cost", limit: int = 10,
-            _u: dict = Depends(auth_required)):
-    cfg = get_config()
-    db = get_db()
-    r = db.top_dimensions(cfg.get("shop_id", ""), date_from, date_to,
-                          ad_product=ad_product, selection_type=selection_type,
-                          user_segment=user_segment, cv_window=cv_window,
-                          order_by=order_by, limit=limit)
+def api_top(req: Request, _u: dict = Depends(auth_required)):
+    qp = dict(req.query_params)
+    p = _parse_common(qp)
+    cfg = get_config(); db = get_db()
+    r = db.top_dimensions(cfg.get("shop_id", ""), p["from"], p["to"],
+                          ad_product=p["product"],
+                          selection_type=int(qp.get("selection_type", 2)),
+                          user_segment=p["segment"], cv_window=p["window"],
+                          order_by=qp.get("order_by", "ad_cost"),
+                          limit=int(qp.get("limit", 10)))
     db.conn.close()
     return r
 
 @app.get("/api/data")
-def api_data(date_from: str, date_to: str, ad_product: str = "RPP",
-             selection_type: int = 1, user_segment: str = "all",
-             cv_window: str = "720h", order_by: str = "report_date",
-             desc: bool = False, limit: int = 500,
-             _u: dict = Depends(auth_required)):
-    cfg = get_config()
-    db = get_db()
-    rows = db.query_performance(cfg.get("shop_id", ""), date_from, date_to,
-                                ad_product=ad_product, selection_type=selection_type,
-                                user_segment=user_segment, cv_window=cv_window,
-                                order_by=order_by, desc=desc, limit=limit)
+def api_data(req: Request, _u: dict = Depends(auth_required)):
+    p = _parse_common(dict(req.query_params))
+    cfg = get_config(); db = get_db()
+    rows = db.query_performance(cfg.get("shop_id", ""), p["from"], p["to"],
+                                ad_product=p["product"],
+                                selection_type=p["selection_type"],
+                                user_segment=p["segment"], cv_window=p["window"],
+                                order_by=p["order_by"], desc=p["desc"],
+                                limit=p["limit"])
     db.conn.close()
     return rows
 
 @app.get("/api/raw")
-def api_raw(ad_product: str, date_from: str, date_to: str,
-            _u: dict = Depends(auth_required)):
-    cfg = get_config()
-    db = get_db()
-    rows = db.get_raw(cfg.get("shop_id", ""), ad_product, date_from, date_to)
+def api_raw(req: Request, _u: dict = Depends(auth_required)):
+    p = _parse_common(dict(req.query_params))
+    cfg = get_config(); db = get_db()
+    rows = db.get_raw(cfg.get("shop_id", ""), p["product"], p["from"], p["to"])
     db.conn.close()
     return rows
+
+# MVP 스텁 — 백그라운드 작업 라우트 (Task #14 본격 구현)
+@app.get("/api/jobs")
+def api_jobs(_u: dict = Depends(auth_required)):
+    return {"jobs": [], "counts": {"pending": 0, "registered": 0, "completed": 0, "failed": 0}}
+
+@app.get("/api/backfill/status")
+def api_backfill_status(_u: dict = Depends(auth_required)):
+    return {"running": False, "progress": 0, "total": 0, "done": 0, "current": None}
 
 @app.post("/api/config")
 async def api_config(req: Request, _u: dict = Depends(auth_required)):
