@@ -287,8 +287,16 @@ function renderPicker() {
   const { y, m, mode } = dpView;
   if (mode === "month") {
     const MN = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+    // 2년 cutoff: 오늘 기준 2년 전 그 달의 1일부터 (예: 2026-06-17 → 2024-06)
+    const td = new Date();
+    const minYM = `${td.getFullYear() - 2}-${String(td.getMonth() + 1).padStart(2, "0")}`;
+    const maxYM = `${td.getFullYear()}-${String(td.getMonth() + 1).padStart(2, "0")}`;
     let h = `<div class="dp-head"><button data-nav="-1">‹</button><span>${y}年</span><button data-nav="1">›</button></div><div class="dp-months">`;
-    for (let i = 0; i < 12; i++) { const val = `${y}-${String(i + 1).padStart(2, "0")}`; h += `<button class="dp-cell${dpView.sel === val ? " sel" : ""}" data-val="${val}">${MN[i]}</button>`; }
+    for (let i = 0; i < 12; i++) {
+      const val = `${y}-${String(i + 1).padStart(2, "0")}`;
+      const disabled = val < minYM || val > maxYM;
+      h += `<button class="dp-cell${dpView.sel === val ? " sel" : ""}${disabled ? " disabled" : ""}" data-val="${val}" ${disabled ? "disabled" : ""}>${MN[i]}</button>`;
+    }
     dpEl.innerHTML = h + "</div>";
   } else {
     const start = new Date(y, m, 1).getDay(), days = new Date(y, m + 1, 0).getDate();
@@ -3584,6 +3592,15 @@ $("#in-to").value = addDays(today(), -1);
 })();
 // 정적 날짜 입력에 커스텀 피커 부착
 $$("[data-dp]").forEach(el => attachPicker(el, el.dataset.dp));
+// 백필 기간 picker 기본값: 2년 전 그 달 ~ 이번 달
+(function setBackfillDefaults() {
+  const td = new Date();
+  const minYM = `${td.getFullYear() - 2}-${String(td.getMonth() + 1).padStart(2, "0")}`;
+  const curYM = `${td.getFullYear()}-${String(td.getMonth() + 1).padStart(2, "0")}`;
+  const from = document.getElementById("bf-from"), to = document.getElementById("bf-to");
+  if (from && !from.value) from.value = minYM;
+  if (to && !to.value) to.value = curYM;
+})();
 // 진행 중이던 백필이 있으면 복귀 시 이어서 표시
 loadStatus().then(() => { loadCoverage(); pollBackfillIfRunning(); loadDashboard(); });
 async function pollBackfillIfRunning() {

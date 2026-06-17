@@ -440,6 +440,8 @@ td.cell-click:hover{text-decoration:underline}
 .dp-cell:hover{background:var(--accent-soft);color:var(--accent-ink)}
 .dp-cell.today{box-shadow:inset 0 0 0 1.5px var(--line)}
 .dp-cell.sel{background:var(--accent);color:#fff}
+.dp-cell.disabled{color:#ccc;cursor:not-allowed;background:transparent}
+.dp-cell.disabled:hover{background:transparent;color:#ccc}
 .dp-months{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:2px}
 .dp-months .dp-cell{padding:12px 0}
 
