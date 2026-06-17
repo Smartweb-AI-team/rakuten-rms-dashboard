@@ -365,36 +365,59 @@ def _save_progress(prog: dict):
         print(f"[backfill] _save_progress fail: {e}", flush=True)
 
 def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
-    """Cloud Run 워커: 로컬 run_backfill과 동등 동작 — 월별 chunk + 진행률 KV 저장."""
+    """Cloud Run 워커 — 로컬 _run_backfill 과 동등:
+    - sel=1/2 는 월별 range call (collect_range 의 1차 step 만)
+    - sel=3/4 는 일별 downloadAsync 를 fetch_rpp_csvs_pipeline 으로 4-parallel
+    - 진행률 = 일 단위 (progress_cb 가 KV 에 매번 저장)
+    """
     import sys, traceback, time as _t
     def log(msg):
         print(f"[backfill #{job_id}] {msg}", flush=True)
 
     t0 = _t.time()
     start = date.fromisoformat(frm)
-    end = date.fromisoformat(to)
-    chunks = _month_chunks(start, end)
+    end_input = date.fromisoformat(to)
+    # 楽天 은 今日 거부 → 어제까지로 자름
+    yesterday = date.today() - timedelta(days=1)
+    end = min(end_input, yesterday)
+    # ITEM/KEYWORD 은 2년 (760일) 이내만
+    item_cutoff = date.today() - timedelta(days=760)
+    istart = max(start, item_cutoff)
+
+    # 일별 작업 = sel=3/4 × 모든 일자 (이게 총 작업 수)
+    day_jobs = []
+    d = istart
+    while d <= end:
+        day_jobs.append((3, 13, d, d))  # 商品
+        day_jobs.append((4, 14, d, d))  # キーワード
+        d += timedelta(days=1)
+
+    # sel=1/2 chunks (월 단위)
+    rpp_chunks = _month_chunks(start, end)
+
+    total_units = len(day_jobs) + len(rpp_chunks) * 2  # 2 = sel1 + sel2
 
     prog = {
-        "running": True, "total": len(chunks), "done": 0,
+        "running": True, "total": total_units, "done": 0,
         "ok": 0, "failed": 0, "rows": 0, "current": "",
         "totals": {lbl: 0 for _, lbl in PRODUCT_LABELS},
         "skips": {}, "notes": [], "log": [], "error": None,
         "started_at": t0, "elapsed_seconds": 0,
-        "from": frm, "to": to, "job_id": job_id,
+        "from": frm, "to": end.isoformat(), "job_id": job_id,
     }
     _save_progress(prog)
-    log(f"START shop={shop_id} {frm}~{to} ({len(chunks)} months)")
+    log(f"START shop={shop_id} {start}~{end} (sel1/2 {len(rpp_chunks)*2} + sel3/4 {len(day_jobs)} units)")
 
     db = get_db()
     try:
-        from rakuten_client import RakutenAdClient
-        from collector import collect_range
+        from rakuten_client import (RakutenAdClient, normalize_rpp,
+                                     normalize_rpp_item_csv, normalize_rpp_keyword_csv,
+                                     SEL_ALL, SEL_CAMPAIGN, PERIOD_DAY)
         cookies = get_session_cookies()
         log(f"cookies: {len(cookies)} items")
         flat = {c["name"]: c["value"] for c in cookies if c.get("name")}
         if "XSRF-TOKEN" not in flat:
-            prog["error"] = "楽天セッション無効: 拡張機能でCookie再送信"; prog["running"] = False
+            prog["error"] = "楽天セッション無効: 拡張機能で再送信"; prog["running"] = False
             _save_progress(prog)
             db.update_download_job(job_id, status="failed", error_msg=prog["error"])
             return
@@ -406,40 +429,71 @@ def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
             db.update_download_job(job_id, status="failed", error_msg=prog["error"])
             return
 
-        for cs, ce in chunks:
-            label = cs.strftime("%Y-%m")
-            prog["current"] = label
-            prog["elapsed_seconds"] = int(_t.time() - t0)
-            _save_progress(prog)
-            log(f"chunk {label} ({cs}~{ce})")
-            try:
-                rep = collect_range(client, db, shop_id, cs, ce)
-                for key, lbl in PRODUCT_LABELS:
-                    prog["totals"][lbl] += rep.get(key, 0)
-                for reason, cnt in rep.get("skips", {}).items():
-                    prog["skips"][reason] = prog["skips"].get(reason, 0) + cnt
-                for note in rep.get("notes", []):
-                    if note not in prog["notes"]:
-                        prog["notes"].append(note)
-                n = (rep["RPP_sel1"] + rep["RPP_sel2"] + rep["RPP_item"]
-                     + rep.get("RPP_keyword", 0) + rep["CPA_rows"] + rep["TDA_rows"])
-                if n > 0:
-                    prog["ok"] += 1; prog["rows"] += n
-                    extra = f"（一部未取得 {rep['skipped_calls']}件）" if rep.get("skipped_calls") else ""
-                    prog["log"].append(f"{label}: {n}件{extra}")
-                    log(f"  {label}: {n} rows")
-                else:
+        # ============ STEP 1: sel=1/2 월별 range (빠름) ============
+        for cs, ce in rpp_chunks:
+            label_chunk = cs.strftime("%Y-%m")
+            for sel, sel_label in ((SEL_ALL, "全体広告"), (SEL_CAMPAIGN, "キャンペーン別")):
+                prog["current"] = f"{label_chunk} · {sel_label}"
+                prog["elapsed_seconds"] = int(_t.time() - t0)
+                _save_progress(prog)
+                try:
+                    rows = client.fetch_rpp(cs, ce, selection_type=sel, period_type=PERIOD_DAY)
+                    n = db.upsert_performance(normalize_rpp(rows, shop_id, sel))
+                    prog["totals"][sel_label] += n
+                    prog["rows"] += n
+                    prog["ok"] += 1
+                    prog["log"].append(f"{label_chunk} {sel_label}: {n}件")
+                    log(f"  {label_chunk} {sel_label}: {n} rows")
+                except Exception as e:
                     prog["failed"] += 1
-                    prog["log"].append(f"{label}: スキップ（データなし）")
-                    log(f"  {label}: 0 rows (skipped)")
+                    reason = "上限超過/データなし" if "400" in str(e) else str(e)[:60]
+                    prog["skips"][f"{sel_label} · {reason}"] = prog["skips"].get(f"{sel_label} · {reason}", 0) + 1
+                    log(f"  {label_chunk} {sel_label}: FAIL {reason}")
+                prog["done"] += 1
+                prog["elapsed_seconds"] = int(_t.time() - t0)
+                _save_progress(prog)
+
+        # ============ STEP 2: sel=3/4 일별 pipeline (4-parallel) ============
+        if day_jobs:
+            log(f"pipeline starting: {len(day_jobs)} day-jobs (4-parallel)")
+            done_in_pipe = [0]
+            def _progress_cb(done_now, total_now):
+                done_in_pipe[0] = done_now
+                prog["current"] = f"商品・キーワード ({done_now}/{total_now})"
+                prog["elapsed_seconds"] = int(_t.time() - t0)
+                _save_progress(prog)
+
+            try:
+                csvs = client.fetch_rpp_csvs_pipeline(
+                    day_jobs,
+                    max_concurrent=4,
+                    poll_interval=5.0,
+                    max_wait=max(7200.0, len(day_jobs) * 60.0),
+                    progress_cb=_progress_cb)
+                for (sel, rt, st_iso, ed_iso), csv_text in csvs.items():
+                    if not csv_text:
+                        prog["failed"] += 1
+                        lbl = "商品別" if sel == 3 else "キーワード別"
+                        prog["skips"][f"{lbl} · ダウンロード未完了"] = prog["skips"].get(f"{lbl} · ダウンロード未完了", 0) + 1
+                    else:
+                        if sel == 4:
+                            rows = normalize_rpp_keyword_csv(csv_text, shop_id)
+                            lbl = "キーワード別"
+                        else:
+                            rows = normalize_rpp_item_csv(csv_text, shop_id)
+                            lbl = "商品別"
+                        n = db.upsert_performance(rows)
+                        prog["totals"][lbl] += n
+                        prog["rows"] += n
+                        prog["ok"] += 1
+                    prog["done"] = len(rpp_chunks) * 2 + done_in_pipe[0]
+                    prog["log"] = prog["log"][-300:]
+                    _save_progress(prog)
+                log(f"pipeline done")
             except Exception as e:
-                prog["failed"] += 1
-                prog["log"].append(f"{label}: 失敗（{str(e)[:70]}）")
-                log(f"  {label}: FAILED {e}")
-            prog["done"] += 1
-            prog["log"] = prog["log"][-300:]
-            prog["elapsed_seconds"] = int(_t.time() - t0)
-            _save_progress(prog)
+                prog["error"] = f"pipeline error: {str(e)[:200]}"
+                log(f"pipeline EXCEPTION: {e}")
+                traceback.print_exc(file=sys.stdout)
 
         db.update_download_job(job_id, status="completed", normalized_rows=prog["rows"])
         log(f"DONE total_rows={prog['rows']} ok={prog['ok']} failed={prog['failed']}")
