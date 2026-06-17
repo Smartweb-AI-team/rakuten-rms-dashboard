@@ -3592,14 +3592,15 @@ $("#in-to").value = addDays(today(), -1);
 })();
 // 정적 날짜 입력에 커스텀 피커 부착
 $$("[data-dp]").forEach(el => attachPicker(el, el.dataset.dp));
-// 백필 기간 picker 기본값: 2년 전 그 달 ~ 이번 달
+// 백필 기간 picker: 항상 「2년전 그 달 ~ 이번 달」 로 강제 (사용자가 이전 값으로 비활성 구간 들어가지 못하게)
 (function setBackfillDefaults() {
   const td = new Date();
   const minYM = `${td.getFullYear() - 2}-${String(td.getMonth() + 1).padStart(2, "0")}`;
   const curYM = `${td.getFullYear()}-${String(td.getMonth() + 1).padStart(2, "0")}`;
   const from = document.getElementById("bf-from"), to = document.getElementById("bf-to");
-  if (from && !from.value) from.value = minYM;
-  if (to && !to.value) to.value = curYM;
+  // 비활성 구간 / 빈값 / 미래값 모두 reset
+  if (from && (!from.value || from.value < minYM || from.value > curYM)) from.value = minYM;
+  if (to && (!to.value || to.value < minYM || to.value > curYM)) to.value = curYM;
 })();
 // 진행 중이던 백필이 있으면 복귀 시 이어서 표시
 loadStatus().then(() => { loadCoverage(); pollBackfillIfRunning(); loadDashboard(); });
