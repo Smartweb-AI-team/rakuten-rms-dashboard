@@ -302,7 +302,7 @@ def api_raw(req: Request, _u: dict = Depends(auth_required)):
                 seen.add(k); fields.append(k)
     return {"fields": fields, "rows": rows, "count": len(rows)}
 
-# MVP 스텁 — 백그라운드 작업 라우트 (Task #14 본격 구현)
+# MVP 스텁 — 백그라운드 작업 라우트
 @app.get("/api/jobs")
 def api_jobs(_u: dict = Depends(auth_required)):
     return {"jobs": [], "counts": {"pending": 0, "registered": 0, "completed": 0, "failed": 0}}
@@ -310,6 +310,57 @@ def api_jobs(_u: dict = Depends(auth_required)):
 @app.get("/api/backfill/status")
 def api_backfill_status(_u: dict = Depends(auth_required)):
     return {"running": False, "progress": 0, "total": 0, "done": 0, "current": None}
+
+@app.post("/api/backfill")
+async def api_backfill(req: Request, _u: dict = Depends(auth_required)):
+    """Vercel 60초 제약으로 長期 백필 불가. 안내만."""
+    raise HTTPException(
+        503,
+        "一括取得(数ヶ月)は時間制約のためVercel上では実行できません。"
+        "管理者がローカル(本人PC)で1回だけ実行してください: "
+        "「py local_server.py」で起動後、ローカル画面から一括取得。"
+        "データはSupabaseに保存され、Vercel側でもすぐ見れます。")
+
+@app.post("/api/collect")
+async def api_collect(req: Request, _u: dict = Depends(auth_required)):
+    """単日〜短期間(目安7日以内)の取得。Vercelの60秒制約内で完了する範囲のみ。"""
+    body = await req.json()
+    cfg = get_config()
+    shop = cfg.get("shop_id", "")
+    if not shop:
+        raise HTTPException(400, "店舗ID未設定")
+    frm = body.get("from") or body.get("date")
+    to_ = body.get("to") or body.get("date")
+    if not frm:
+        to_ = (date.today() - timedelta(days=1)).isoformat()
+        frm = to_
+    start, end = date.fromisoformat(frm), date.fromisoformat(to_)
+    days = (end - start).days + 1
+    if days > 14:
+        raise HTTPException(
+            400,
+            f"指定期間 {days}日 はVercelの時間制約を超えます。"
+            "7日以内で再試行するか、過去の大量取得はローカルで実行してください。")
+
+    # 楽天 cookie 확인
+    cookies = get_session_cookies()
+    flat = {c["name"]: c["value"] for c in cookies if c.get("name")}
+    if "XSRF-TOKEN" not in flat:
+        raise HTTPException(401, "楽天セッションが無効です。RMS広告ページに再ログインして拡張機能でCookie送信してください。")
+
+    try:
+        from rakuten_client import RakutenAdClient
+        from collector import collect_range
+        import time as _t
+        client = RakutenAdClient(cookies)
+        db = get_db()
+        t0 = _t.time()
+        rep = collect_range(client, db, shop, start, end)
+        rep["elapsed_seconds"] = int(_t.time() - t0)
+        db.conn.close()
+        return rep
+    except Exception as e:
+        raise HTTPException(500, f"取得失敗: {str(e)[:200]}")
 
 @app.post("/api/config")
 async def api_config(req: Request, _u: dict = Depends(auth_required)):
