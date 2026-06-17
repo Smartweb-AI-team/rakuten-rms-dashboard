@@ -335,21 +335,49 @@ async def api_backfill_reset(_u: dict = Depends(auth_required)):
 @app.get("/api/backfill/status")
 def api_backfill_status(_u: dict = Depends(auth_required)):
     db = get_db()
-    # 가장 최근 backfill job 1개
     jobs = db.list_download_jobs(status=None, limit=1)
     db.conn.close()
+    base = {"running": False, "done": 0, "total": 0, "ok": 0, "failed": 0,
+            "rows": 0, "elapsed_seconds": 0, "totals": {}, "skips": {},
+            "notes": [], "log": [], "current": "", "error": None}
     if not jobs:
-        return {"running": False, "progress": 0, "total": 0, "done": 0, "current": None}
+        return base
     j = jobs[0]
     running = j["status"] in ("pending", "registered")
+    # 경과 시간 — created_at 부터 (running 중) 또는 updated_at 까지 (완료)
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        created = j.get("created_at")
+        if isinstance(created, str):
+            created = _dt.fromisoformat(created.replace("Z", "+00:00"))
+        end_ref = _dt.now(_tz.utc) if running else (
+            _dt.fromisoformat(str(j.get("updated_at")).replace("Z", "+00:00"))
+            if j.get("updated_at") else _dt.now(_tz.utc))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=_tz.utc)
+        if end_ref.tzinfo is None:
+            end_ref = end_ref.replace(tzinfo=_tz.utc)
+        elapsed = int((end_ref - created).total_seconds())
+    except Exception:
+        elapsed = 0
+
+    log_lines = []
+    if j.get("error_msg"):
+        log_lines.append(f"[{j['status']}] {j['error_msg']}")
+
     return {
-        "running": running, "job_id": j["id"], "status": j["status"],
-        "start_date": j.get("start_date"), "end_date": j.get("end_date"),
-        "normalized_rows": j.get("normalized_rows"),
-        "error_msg": j.get("error_msg"),
-        "current": j.get("status"),
-        "progress": 100 if j["status"] == "completed" else (0 if not running else 50),
-        "total": 1, "done": 1 if j["status"] == "completed" else 0,
+        **base,
+        "running": running,
+        "current": j.get("status") or "",
+        "total": 1, "done": 0 if running else 1,
+        "ok": 0 if running else (1 if j["status"] == "completed" else 0),
+        "failed": 0 if running else (1 if j["status"] == "failed" else 0),
+        "rows": j.get("normalized_rows") or 0,
+        "elapsed_seconds": elapsed,
+        "log": log_lines,
+        "error": j.get("error_msg") if j["status"] in ("failed", "cancelled") else None,
+        "job_id": j["id"],
+        "status": j["status"],
     }
 
 def _do_backfill_worker(job_id: int, frm: str, to: str, shop_id: str):
