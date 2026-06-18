@@ -728,13 +728,30 @@ async function runBackfillViaExtension(from, to, shopId, opts = {}) {
           rb.className = "result-box err";
           rb.innerHTML = `<div class="cl-head"><span class="cl-ok" style="color:#bf0000">⚠ 取得失敗</span><span class="muted small">${escapeHtml(info.error)}</span></div>`;
         } else {
+          const logLines = (info.log || []).slice(-20).reverse();
+          const logHtml = logLines.length
+            ? logLines.map(l => `<div class="${l.includes('失敗') || l.includes('エラー') ? 'fail' : ''}" style="font-size:11px;font-family:ui-monospace,monospace;padding:2px 6px;border-radius:3px;${l.includes('失敗')||l.includes('エラー')?'background:#fff4f4;color:#bf0000':'color:#5a6173'}">${escapeHtml(l)}</div>`).join("")
+            : `<div class="muted small">— ログなし</div>`;
+          const okCount = info.ok || 0;
+          const failedCount = info.failed || 0;
           rb.className = "result-box ok";
           rb.innerHTML = `
-            <div class="cl-head"><span class="cl-ok">✅ 取得完了</span><span class="muted small">${escapeHtml(from)} 〜 ${escapeHtml(to)} ・ ⏱ ${fmtTime(elapsed)}</span></div>
-            <div class="cl-grid"><div class="cl-section"><div class="cl-sec-h">📦 取得結果</div><div class="cl-cards">
-              ${Object.entries(totals).map(([k,v]) => `<div class="cl-card"><div class="cl-l">${escapeHtml(k)}</div><div class="cl-v">${fmt(v)}</div></div>`).join("")}
-              <div class="cl-card"><div class="cl-l">累計</div><div class="cl-v">${fmt(info.rows || 0)}</div></div>
-            </div></div></div>
+            <div class="cl-head"><span class="cl-ok">✅ 取得完了</span><span class="muted small">${escapeHtml(from)} 〜 ${escapeHtml(to)} ・ ⏱ ${fmtTime(elapsed)} ・ 成功 ${okCount} / 失敗 ${failedCount}</span></div>
+            <div class="cl-grid">
+              <div class="cl-section">
+                <div class="cl-sec-h">📦 RPP（楽天プロモーション広告）</div>
+                <div class="cl-cards">
+                  ${Object.entries(totals).map(([k,v]) => `<div class="cl-card"><div class="cl-l">${escapeHtml(k)}</div><div class="cl-v">${fmt(v)}</div></div>`).join("")}
+                  <div class="cl-card"><div class="cl-l">累計</div><div class="cl-v">${fmt(info.rows || 0)}</div></div>
+                </div>
+              </div>
+              <div class="cl-section">
+                <div class="cl-sec-h">📋 取得ログ（最新20件）</div>
+                <div class="cl-log" style="max-height:200px;overflow:auto;background:#fafbfc;border:1px solid #eef0f2;border-radius:6px;padding:6px;display:flex;flex-direction:column;gap:2px">
+                  ${logHtml}
+                </div>
+              </div>
+            </div>
           `;
         }
       } else {
