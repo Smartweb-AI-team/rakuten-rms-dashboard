@@ -237,6 +237,8 @@ async def api_ingest(req: Request, user: dict = Depends(auth_required)):
     body:
       type: 'rpp_search'         → {rows: [...]} (sel=1/2 의 search JSON)
       type: 'rpp_download_zip'   → {zip_base64, selection_type, report_date}
+      type: 'cpa_search'         → {rows, start_date, end_date}  CPA GET 검색 응답 raw 저장
+      type: 'tda_search'         → {rows, start_date, end_date}  TDA GET 응답 raw 저장 + normalize_tda → performance
     """
     import base64, zipfile, io
     body = await req.json()
@@ -273,6 +275,30 @@ async def api_ingest(req: Request, user: dict = Depends(auth_required)):
             else:
                 raise HTTPException(400, f"unsupported sel for zip: {sel}")
             inserted = db.upsert_performance(norm, collected_by=user.get("sub") or user.get("email"))
+        elif typ in ("cpa_search", "tda_search"):
+            from collections import defaultdict
+            product = "CPA" if typ == "cpa_search" else "TDA"
+            rows = body.get("rows") or []
+            if rows:
+                # 날짜 키 자동 감지 (collector._store_raw_by_date 로직 그대로)
+                datekey = next((k for k in rows[0] if "date" in k.lower()), None)
+                if datekey:
+                    groups = defaultdict(list)
+                    for r in rows:
+                        groups[str(r.get(datekey))[:10]].append(r)
+                    for d, rs in groups.items():
+                        inserted += db.upsert_raw(shop_id, product, d, rs)
+                else:
+                    inserted = db.upsert_raw(
+                        shop_id, product,
+                        body.get("start_date") or body.get("end_date") or "",
+                        rows)
+                if typ == "tda_search":
+                    from rakuten_client import normalize_tda
+                    norm = normalize_tda(rows, shop_id)
+                    if norm:
+                        db.upsert_performance(
+                            norm, collected_by=user.get("sub") or user.get("email"))
         else:
             raise HTTPException(400, f"unknown type: {typ}")
     finally:

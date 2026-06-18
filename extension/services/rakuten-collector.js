@@ -200,6 +200,35 @@ async function fetchDownloadCsvZip(downloadId, reportType) {
   return await r.arrayBuffer();  // ZIP 바이너리
 }
 
+// CPA: GET /cpa/api/reports/search?periodType=2&startDate=...&endDate=...
+async function fetchCpaSearch(startISO, endISO) {
+  const qs = new URLSearchParams({
+    page: '1', periodType: '2', startDate: startISO, endDate: endISO,
+  });
+  const r = await rakutenFetch('/cpa/api/reports/search?' + qs.toString());
+  if (r.status === 400) return [];  // 데이터 없음 = 정상
+  if (!r.ok) throw new Error(`cpa search ${r.status}`);
+  const j = await r.json();
+  const d = (j && j.data) || {};
+  for (const v of Object.values(d)) if (Array.isArray(v)) return v;
+  return [];
+}
+
+// TDA: GET /tda/api/aggregator/v2/reports/search?campaignType=1&selectionType=1&periodType=2&reportStartDate=...&reportEndDate=...
+async function fetchTdaSearch(startISO, endISO) {
+  const qs = new URLSearchParams({
+    page: '1', campaignType: '1', selectionType: '1', periodType: '2',
+    reportStartDate: startISO, reportEndDate: endISO,
+  });
+  const r = await rakutenFetch('/tda/api/aggregator/v2/reports/search?' + qs.toString());
+  if (r.status === 400) return [];
+  if (!r.ok) throw new Error(`tda search ${r.status}`);
+  const j = await r.json();
+  const d = (j && j.data) || {};
+  for (const v of Object.values(d)) if (Array.isArray(v)) return v;
+  return [];
+}
+
 async function fetchRppSearch(selectionType, periodType, startISO, endISO) {
   const allRows = [];
   for (let page = 1; page < 200; page++) {
@@ -298,7 +327,7 @@ export async function runBackfill(task, onProgress) {
   const yesterday = new Date(today.getTime() - 86400000);
   const effEnd = endDate > yesterday ? yesterday : endDate;
 
-  const totals = { '全体広告': 0, 'キャンペーン別': 0, '商品別': 0, 'キーワード別': 0 };
+  const totals = { '全体広告': 0, 'キャンペーン別': 0, '商品別': 0, 'キーワード別': 0, 'CPA': 0, 'TDA': 0 };
   let totalRows = 0, ok = 0, failed = 0;
   let totalUnits = 0;  // 전체 작업 수 (sel=1/2 각 1개 + sel=3/4 일별)
   const log = [];
@@ -320,10 +349,26 @@ export async function runBackfill(task, onProgress) {
     });
   }
 
+  // CPA/TDA 청크 (최대 3개월 단위 — 옛 collector.CPA_TDA_MAX_MONTHS=3)
+  function _addMonths(d, n) {
+    const r = new Date(d); r.setMonth(r.getMonth() + n); return r;
+  }
+  const cpaTdaChunks = [];
+  {
+    let cs = new Date(startDate);
+    while (cs <= effEnd) {
+      let ce = _addMonths(cs, 3);
+      ce.setDate(ce.getDate() - 1);
+      if (ce > effEnd) ce = new Date(effEnd);
+      cpaTdaChunks.push([_ymd(cs), _ymd(ce)]);
+      cs = new Date(ce); cs.setDate(cs.getDate() + 1);
+    }
+  }
+
   // 전체 작업 수 미리 계산
   const sel12Count = [1, 2].filter(s => sels.includes(s)).length;
-  // sel=3/4 는 일별 — 아래에서 dayJobs 만들면서 더해짐 (지금은 sel12 만)
-  totalUnits = sel12Count;
+  // sel=3/4 는 일별 — 아래에서 dayJobs 만들면서 더해짐 (지금은 sel12 + CPA/TDA chunks)
+  totalUnits = sel12Count + cpaTdaChunks.length * 2;
 
   // ============ sel=1, 2 (search API — 즉시 JSON) ============
   for (const sel of [1, 2].filter(s => sels.includes(s))) {
@@ -350,6 +395,37 @@ export async function runBackfill(task, onProgress) {
     progress();
   }
 
+  // ============ CPA / TDA (GET search — chunk 단위 raw 저장 + TDA 정규화) ============
+  for (const [cs, ce] of cpaTdaChunks) {
+    for (const product of ['CPA', 'TDA']) {
+      progress({ current: `${product} 取得中 ${cs}〜${ce}` });
+      try {
+        const rows = product === 'CPA'
+          ? await fetchCpaSearch(cs, ce)
+          : await fetchTdaSearch(cs, ce);
+        if (rows.length === 0) {
+          ok++;
+          pushLog(`${product} ${cs}〜${ce}: 0件 (期間内データなし)`);
+        } else {
+          const r = await uploadToVercel(vercelUrl, jwt, {
+            type: product === 'CPA' ? 'cpa_search' : 'tda_search',
+            shop_id, rows, start_date: cs, end_date: ce,
+          });
+          const inserted = r.inserted || rows.length;
+          totals[product] += inserted;
+          totalRows += inserted;
+          ok++;
+          pushLog(`${product} ${cs}〜${ce}: ${inserted}件`);
+        }
+      } catch (e) {
+        console.error(`[backfill] ${product} ${cs}〜${ce} fail:`, e);
+        failed++;
+        pushLog(`${product} ${cs}〜${ce}: 失敗 (${String(e).slice(0,80)})`);
+      }
+      progress();
+    }
+  }
+
   // ============ sel=3, 4 (downloadAsync — 일별) ============
   // 일자별로 (st=ed=d) downloadAsync 등록 → list 폴링 → CSV ZIP 다운로드 → 업로드
   const dayJobs = [];
@@ -362,10 +438,10 @@ export async function runBackfill(task, onProgress) {
     }
   }
 
-  totalUnits = sel12Count + dayJobs.length;
+  totalUnits = sel12Count + cpaTdaChunks.length * 2 + dayJobs.length;
   if (dayJobs.length === 0) {
     progress({ current: '完了', done: true });
-    return;
+    return { totals, rows: totalRows, ok, failed };
   }
 
   // 5-parallel pipeline + 5개씩 ZIP 배치 업로드 (다운로드/업로드 비동기)
