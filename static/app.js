@@ -467,38 +467,34 @@ $$(".quick .chip").forEach(c => c.onclick = () => {
   $("#in-day").value = addDays(today(), map[c.dataset.q]);
 });
 $("#btn-collect").onclick = async () => {
-  const sample = $("#chk-sample").checked;
   let from, to;
   if (collectMode === "day") { from = to = $("#in-day").value; }
   else { from = $("#in-from").value; to = $("#in-to").value; }
   if (!from || !to) return toast("日付を選択してください", true);
 
-  // 확장 워커 우선 (Vercel + ブラウザワーカー 環境의 정공법).
-  // sample 모드 또는 확장 미설치 시에만 옛 서버 사이드 /api/collect 폴백.
-  if (!sample) {
-    await ensureExt(1500);
-    if (EXT_READY) {
-      const st = await api.get("/api/status").catch(() => null);
-      const shopId = RAKUTEN_SHOP_ID || st?.shop_id;
-      if (!shopId) return toast("楽天 RMS にログインしていません — RMS広告ページを開いてから再実行してください", true);
-      const box = $("#collect-result"); box.className = "result-box"; box.classList.remove("hidden");
-      box.innerHTML = `<span class="spin"></span>ブラウザワーカーで取得中 (${from} 〜 ${to})…<br><span class="muted small">下の進捗バーで状態を確認できます</span>`;
-      $("#btn-collect").disabled = true;
-      return runBackfillViaExtension(from, to, shopId, { resultBoxSelector: '#collect-result', label: '取得', standalone: true });
-    }
+  // 확장 워커 우선. 확장 미설치 시에만 옛 서버 사이드 /api/collect 폴백 (로컬 server.py 한정).
+  await ensureExt(1500);
+  if (EXT_READY) {
+    const st = await api.get("/api/status").catch(() => null);
+    const shopId = RAKUTEN_SHOP_ID || st?.shop_id;
+    if (!shopId) return toast("楽天 RMS にログインしていません — RMS広告ページを開いてから再実行してください", true);
+    const box = $("#collect-result"); box.className = "result-box"; box.classList.remove("hidden");
+    box.innerHTML = `<span class="spin"></span>ブラウザワーカーで取得中 (${from} 〜 ${to})…`;
+    $("#btn-collect").disabled = true;
+    return runBackfillViaExtension(from, to, shopId, { resultBoxSelector: '#collect-result', label: '取得', standalone: true });
   }
 
   const btn = $("#btn-collect"); btn.disabled = true;
   const box = $("#collect-result"); box.className = "result-box"; box.classList.remove("hidden");
-  box.innerHTML = `<span class="spin"></span>${sample ? "サンプル生成" : "楽天から取得"}中… (${from} 〜 ${to})<br><span class="muted small">商品/キーワード CSVダウンロードに約1〜2分かかります</span>`;
+  box.innerHTML = `<span class="spin"></span>楽天から取得中… (${from} 〜 ${to})<br><span class="muted small">商品/キーワード CSVダウンロードに約1〜2分かかります</span>`;
   try {
     let r;
     try {
-      r = await api.post("/api/collect", { from, to, sample });
+      r = await api.post("/api/collect", { from, to });
     } catch (e) {
       // Lock 충돌(409) — 사용자에게 강제 실행 옵션
       if (String(e.message || "").includes("他のPC") && confirm(e.message + "\n\n強制実行しますか？")) {
-        r = await api.post("/api/collect", { from, to, sample, force_lock: true });
+        r = await api.post("/api/collect", { from, to, force_lock: true });
       } else { throw e; }
     }
     box.classList.add("ok");

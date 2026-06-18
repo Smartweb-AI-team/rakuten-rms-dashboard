@@ -405,6 +405,275 @@ def api_top(req: Request, _u: dict = Depends(auth_required)):
     db.close()
     return {"rows": r}
 
+@app.get("/api/weekday")
+def api_weekday(req: Request, _u: dict = Depends(auth_required)):
+    p = _parse_common(dict(req.query_params))
+    cfg = get_config(); db = get_db()
+    rows = db.daily_series(cfg.get("shop_id", ""), p["from"], p["to"],
+                           ad_product=p["product"], selection_type=p["selection_type"],
+                           user_segment=p["segment"], cv_window=p["window"])
+    db.close()
+    bucket = [[0, 0, 0, 0, 0] for _ in range(7)]  # [count, ad_cost, gms, clicks, cv]
+    for r in rows:
+        rd = r.get("report_date")
+        if not rd:
+            continue
+        y, m, d = map(int, rd.split("-"))
+        wd = date(y, m, d).weekday()
+        b = bucket[wd]
+        b[0] += 1
+        b[1] += r.get("ad_cost") or 0
+        b[2] += r.get("gms") or 0
+        b[3] += r.get("clicks") or 0
+        b[4] += r.get("cv") or 0
+    LABELS = ["月", "火", "水", "木", "金", "土", "日"]
+    out = []
+    for i, (cnt, cost, gms, clicks, cv) in enumerate(bucket):
+        out.append({
+            "weekday": LABELS[i], "wd": i, "days": cnt,
+            "ad_cost": cost, "gms": gms, "clicks": clicks, "cv": cv,
+            "roas": (gms / cost) if cost else None,
+            "avg_gms": (gms / cnt) if cnt else 0,
+            "avg_cost": (cost / cnt) if cnt else 0,
+        })
+    return {"weekday": out}
+
+
+@app.get("/api/outliers")
+def api_outliers(req: Request, _u: dict = Depends(auth_required)):
+    qp = dict(req.query_params)
+    p = _parse_common(qp)
+    cfg = get_config(); db = get_db()
+    rows = db.daily_series(cfg.get("shop_id", ""), p["from"], p["to"],
+                           ad_product=p["product"], selection_type=p["selection_type"],
+                           user_segment=p["segment"], cv_window=p["window"])
+    db.close()
+    if not rows:
+        return {"outliers": []}
+    key = qp.get("metric", "gms")
+    vals = sorted(r.get(key) or 0 for r in rows)
+    Q1 = vals[len(vals) // 4]
+    Q3 = vals[len(vals) * 3 // 4]
+    iqr = Q3 - Q1
+    hi = Q3 + iqr * 1.5
+    lo = Q1 - iqr * 1.5
+    out = []
+    for r in rows:
+        v = r.get(key) or 0
+        if v > hi:
+            out.append({"date": r["report_date"], "value": v, "kind": "high", "metric": key})
+        elif v < lo and v >= 0:
+            out.append({"date": r["report_date"], "value": v, "kind": "low", "metric": key})
+    return {"outliers": out}
+
+
+@app.get("/api/keyword_diff")
+def api_keyword_diff(req: Request, _u: dict = Depends(auth_required)):
+    qp = dict(req.query_params)
+    p = _parse_common(qp)
+    cfg = get_config(); db = get_db()
+    shop = cfg.get("shop_id", "")
+    a_from = qp.get("aFrom", "")
+    a_to = qp.get("aTo", "")
+    seg, win = p["segment"], p["window"]
+    frm, to_ = p["from"], p["to"]
+    A, B = {}, {}
+    with db.cursor() as cur:
+        from db import _ph
+        ph = _ph(1)
+        sql_a = (f"SELECT dimension_key, item_url, SUM(ad_cost) cost, SUM(gms) gms, SUM(clicks) clicks "
+                 f"FROM ad_daily_performance "
+                 f"WHERE shop_id={ph} AND ad_product='RPP' AND selection_type=4 "
+                 f"AND user_segment={ph} AND cv_window={ph} "
+                 f"AND report_date BETWEEN {ph} AND {ph} "
+                 f"GROUP BY dimension_key, item_url")
+        cur.execute(sql_a, (shop, seg, win, a_from, a_to))
+        for r in cur.fetchall():
+            d = dict(r)
+            k = d.get("dimension_key")
+            if k:
+                A[k] = d
+        cur.execute(sql_a, (shop, seg, win, frm, to_))
+        for r in cur.fetchall():
+            d = dict(r)
+            k = d.get("dimension_key")
+            if k:
+                B[k] = d
+    db.close()
+    entered = [v for k, v in B.items() if k not in A]
+    gone = [v for k, v in A.items() if k not in B]
+    kept = []
+    for k, b in B.items():
+        if k in A:
+            a = A[k]
+            b_cost = b.get("cost") or 0
+            a_cost = a.get("cost") or 0
+            b_roas = (b.get("gms") or 0) / b_cost if b_cost else None
+            a_roas = (a.get("gms") or 0) / a_cost if a_cost else None
+            kept.append({**b, "a_cost": a_cost, "a_roas": a_roas,
+                         "cost_delta_pct": round((b_cost - a_cost) / a_cost * 1000) / 10 if a_cost else None,
+                         "roas_delta_pct": round((b_roas - a_roas) / a_roas * 1000) / 10 if (a_roas and b_roas is not None) else None})
+    entered.sort(key=lambda x: -(x.get("cost") or 0))
+    gone.sort(key=lambda x: -(x.get("cost") or 0))
+    return {"entered": entered[:20], "gone": gone[:20], "kept_count": len(kept)}
+
+
+@app.get("/api/seasonality")
+def api_seasonality(req: Request, _u: dict = Depends(auth_required)):
+    p = _parse_common(dict(req.query_params))
+    cfg = get_config(); db = get_db()
+    shop = cfg.get("shop_id", "")
+    try:
+        a = date.fromisoformat(p["from"]); b = date.fromisoformat(p["to"])
+    except Exception:
+        db.close()
+        raise HTTPException(400, "invalid date")
+    py_from = date(a.year - 1, a.month, min(a.day, 28)).isoformat()
+    py_to = date(b.year - 1, b.month, min(b.day, 28)).isoformat()
+    cur_kpi = db.kpis(shop, p["from"], p["to"], ad_product=p["product"],
+                      selection_type=p["selection_type"], user_segment=p["segment"], cv_window=p["window"])
+    py_kpi = db.kpis(shop, py_from, py_to, ad_product=p["product"],
+                     selection_type=p["selection_type"], user_segment=p["segment"], cv_window=p["window"])
+    cur_series = db.daily_series(shop, p["from"], p["to"], ad_product=p["product"],
+                                 selection_type=p["selection_type"], user_segment=p["segment"], cv_window=p["window"])
+    py_series = db.daily_series(shop, py_from, py_to, ad_product=p["product"],
+                                selection_type=p["selection_type"], user_segment=p["segment"], cv_window=p["window"])
+    db.close()
+    def yoy(c, prev):
+        return round((c - prev) / abs(prev) * 1000) / 10 if prev else None
+    return {
+        "current": cur_kpi, "prev_year": py_kpi,
+        "prev_range": {"from": py_from, "to": py_to},
+        "series_current": cur_series, "series_prev": py_series,
+        "yoy": {k: yoy(cur_kpi.get(k) or 0, py_kpi.get(k) or 0)
+                for k in ("gms", "ad_cost", "clicks", "cv", "roas")},
+        "has_prev": bool(py_kpi.get("gms") or py_kpi.get("ad_cost")),
+    }
+
+
+@app.get("/api/item_keywords")
+def api_item_keywords(req: Request, _u: dict = Depends(auth_required)):
+    p = _parse_common(dict(req.query_params))
+    cfg = get_config(); db = get_db()
+    shop = cfg.get("shop_id", "")
+    seg, win = p["segment"], p["window"]
+    frm, to_ = p["from"], p["to"]
+    item_ads, kw_rows = {}, []
+    with db.cursor() as cur:
+        from db import _ph
+        ph = _ph(1)
+        cur.execute(
+            f"SELECT item_url, MIN(dimension_key) AS item_no, "
+            f"SUM(clicks) clicks, SUM(impressions) impressions, "
+            f"SUM(ad_cost) ad_cost, SUM(gms) gms, SUM(cv) cv "
+            f"FROM ad_daily_performance "
+            f"WHERE shop_id={ph} AND ad_product='RPP' AND selection_type=3 "
+            f"AND user_segment={ph} AND cv_window={ph} "
+            f"AND report_date BETWEEN {ph} AND {ph} "
+            f"AND COALESCE(item_url,'')<>'' GROUP BY item_url",
+            (shop, seg, win, frm, to_))
+        for r in cur.fetchall():
+            rd = dict(r)
+            k = rd.get("item_url") or ""
+            rd["item"] = rd.get("item_no") or ""
+            if k:
+                cost = rd.get("ad_cost") or 0
+                impr = rd.get("impressions") or 0
+                clk = rd.get("clicks") or 0
+                cv = rd.get("cv") or 0
+                rd["ctr"] = (clk / impr) if impr else None
+                rd["roas"] = ((rd.get("gms") or 0) / cost) if cost else None
+                rd["cvr"] = (cv / clk) if clk else None
+                item_ads[k] = rd
+        cur.execute(
+            f"SELECT item_url, dimension_key AS keyword, "
+            f"SUM(clicks) clicks, SUM(impressions) impressions, "
+            f"SUM(ad_cost) ad_cost, SUM(gms) gms, SUM(cv) cv "
+            f"FROM ad_daily_performance "
+            f"WHERE shop_id={ph} AND ad_product='RPP' AND selection_type=4 "
+            f"AND user_segment={ph} AND cv_window={ph} "
+            f"AND report_date BETWEEN {ph} AND {ph} "
+            f"GROUP BY item_url, dimension_key "
+            f"ORDER BY SUM(ad_cost) DESC LIMIT 4000",
+            (shop, seg, win, frm, to_))
+        kw_rows = [dict(r) for r in cur.fetchall()]
+    db.close()
+    kw_groups = {}
+    for r in kw_rows:
+        k = r.get("item_url") or "(未紐付け)"
+        # 추가 계산
+        cost = r.get("ad_cost") or 0
+        impr = r.get("impressions") or 0
+        clk = r.get("clicks") or 0
+        cv = r.get("cv") or 0
+        r["roas"] = ((r.get("gms") or 0) / cost) if cost else None
+        r["ctr"] = (clk / impr) if impr else None
+        r["cvr"] = (cv / clk) if clk else None
+        kw_groups.setdefault(k, []).append(r)
+    all_keys = set(item_ads.keys()) | set(kw_groups.keys())
+    packed = []
+    for item in all_keys:
+        ia = item_ads.get(item)
+        kws = kw_groups.get(item, [])
+        item_cost = (ia or {}).get("ad_cost") or 0
+        item_gms = (ia or {}).get("gms") or 0
+        item_clicks = (ia or {}).get("clicks") or 0
+        item_cv = (ia or {}).get("cv") or 0
+        item_impr = (ia or {}).get("impressions") or 0
+        kw_cost = sum(k.get("ad_cost") or 0 for k in kws)
+        kw_gms = sum(k.get("gms") or 0 for k in kws)
+        kw_clicks = sum(k.get("clicks") or 0 for k in kws)
+        kw_cv = sum(k.get("cv") or 0 for k in kws)
+        kw_impr = sum(k.get("impressions") or 0 for k in kws)
+        tot_cost = item_cost + kw_cost
+        tot_gms = item_gms + kw_gms
+        pure = None
+        if ia and item_cost > 0:
+            pure_cost = max(0, item_cost - kw_cost)
+            pure_gms = max(0, item_gms - kw_gms)
+            pure_clicks = max(0, item_clicks - kw_clicks)
+            pure_cv = max(0, item_cv - kw_cv)
+            pure_impr = max(0, item_impr - kw_impr) if item_impr else 0
+            pure = {
+                "ad_cost": pure_cost, "gms": pure_gms,
+                "clicks": pure_clicks, "cv": pure_cv, "impressions": pure_impr,
+                "roas": (pure_gms / pure_cost) if pure_cost > 0 else None,
+                "cpc": (pure_cost / pure_clicks) if pure_clicks > 0 else None,
+                "cpa": (pure_cost / pure_cv) if pure_cv > 0 else None,
+                "ctr": (pure_clicks / pure_impr) if pure_impr > 0 else None,
+                "cvr": (pure_cv / pure_clicks) if pure_clicks > 0 else None,
+                "share": (pure_cost / item_cost) if item_cost > 0 else None,
+            }
+        item_label = (ia or {}).get("item") if ia else ""
+        if not item_label and isinstance(item, str) and item.startswith("http"):
+            parts = [p for p in item.rstrip("/").split("/") if p]
+            item_label = parts[-1] if parts else item
+        packed.append({
+            "item_url": item, "item_label": item_label or item,
+            "keywords": kws,
+            "item_ad": {"ad_cost": item_cost, "gms": item_gms,
+                        "clicks": item_clicks, "cv": item_cv, "impressions": item_impr,
+                        "ctr": (item_clicks / item_impr) if item_impr else None,
+                        "cvr": (item_cv / item_clicks) if item_clicks else None,
+                        "roas": (item_gms / item_cost) if item_cost else None} if ia else None,
+            "pure": pure,
+            "total_cost": tot_cost, "total_gms": tot_gms,
+            "roas": (tot_gms / tot_cost) if tot_cost else None,
+            "keyword_count": len(kws),
+            "has_item_ad": bool(ia),
+        })
+    packed.sort(key=lambda x: -(x.get("total_gms") or 0))
+    return {
+        "items": packed,
+        "summary": {
+            "items_total": len(packed),
+            "items_with_keyword": sum(1 for p in packed if p["keyword_count"] > 0),
+            "items_only_item_ad": sum(1 for p in packed if p["has_item_ad"] and p["keyword_count"] == 0),
+            "keyword_only_unmapped": sum(1 for p in packed if not p["has_item_ad"]),
+        },
+    }
+
+
 @app.get("/api/data")
 def api_data(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
