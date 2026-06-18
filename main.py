@@ -585,6 +585,7 @@ def api_item_keywords(req: Request, _u: dict = Depends(auth_required)):
                 rd["roas"] = ((rd.get("gms") or 0) / cost) if cost else None
                 rd["cvr"] = (cv / clk) if clk else None
                 item_ads[k] = rd
+        # SQL 단순화 — ROUND/CASE 절 빼고 Python 후처리 (Postgres 호환성)
         cur.execute(
             f"SELECT item_url, dimension_key AS keyword, "
             f"SUM(clicks) clicks, SUM(impressions) impressions, "
@@ -672,6 +673,121 @@ def api_item_keywords(req: Request, _u: dict = Depends(auth_required)):
             "keyword_only_unmapped": sum(1 for p in packed if not p["has_item_ad"]),
         },
     }
+
+
+@app.get("/api/categories")
+def api_categories(req: Request, _u: dict = Depends(auth_required)):
+    """SKU 카테고리 그룹 — config.sku_categories 매핑 기반."""
+    p = _parse_common(dict(req.query_params))
+    cfg = get_config(); db = get_db()
+    shop = cfg.get("shop_id", "")
+    seg, win = p["segment"], p["window"]
+    frm, to_ = p["from"], p["to"]
+    manual = cfg.get("sku_categories") or {}
+    from db import _ph
+    ph = _ph(1)
+    skus = []
+    with db.cursor() as cur:
+        cur.execute(
+            f"SELECT dimension_key sku, SUM(ad_cost) cost, SUM(gms) gms, "
+            f"SUM(clicks) clicks, SUM(cv) cv, SUM(impressions) impr "
+            f"FROM ad_daily_performance "
+            f"WHERE shop_id={ph} AND ad_product='RPP' AND selection_type=3 "
+            f"AND user_segment={ph} AND cv_window={ph} "
+            f"AND report_date BETWEEN {ph} AND {ph} "
+            f"GROUP BY dimension_key",
+            (shop, seg, win, frm, to_))
+        skus = [dict(r) for r in cur.fetchall()]
+    db.close()
+    sorted_manual = sorted(manual.items(), key=lambda x: -len(x[0]))
+    def categorize(sku):
+        if not sku: return "未分類"
+        if sku in manual: return manual[sku]
+        for prefix, cat in sorted_manual:
+            if sku.startswith(prefix): return cat
+        return "未分類"
+    groups = {}
+    for s in skus:
+        cat = categorize(s.get("sku"))
+        g = groups.setdefault(cat, {"category": cat, "skus": [], "cost": 0, "gms": 0, "clicks": 0, "cv": 0, "impr": 0})
+        g["skus"].append(s.get("sku"))
+        g["cost"] += s.get("cost") or 0
+        g["gms"] += s.get("gms") or 0
+        g["clicks"] += s.get("clicks") or 0
+        g["cv"] += s.get("cv") or 0
+        g["impr"] += s.get("impr") or 0
+    out = []
+    for g in groups.values():
+        out.append({**g, "sku_count": len(g["skus"]),
+                    "roas": (g["gms"] / g["cost"]) if g["cost"] else None,
+                    "ctr": (g["clicks"] / g["impr"]) if g["impr"] else None,
+                    "cpa": (g["cost"] / g["cv"]) if g["cv"] else None})
+    out.sort(key=lambda x: -(x.get("cost") or 0))
+    return {"categories": out, "manual_count": len(manual)}
+
+
+@app.post("/api/categories/mapping")
+async def api_categories_mapping(req: Request, _u: dict = Depends(auth_required)):
+    """SKU prefix → 카테고리 매핑 저장/조회 (config.sku_categories 갱신)."""
+    body = await req.json()
+    cfg = get_config()
+    if isinstance(body.get("mapping"), dict):
+        cfg["sku_categories"] = body["mapping"]
+        save_config(cfg)
+    return {"mapping": cfg.get("sku_categories", {})}
+
+
+@app.post("/api/categories/auto_suggest")
+async def api_categories_auto_suggest(req: Request, _u: dict = Depends(auth_required)):
+    """키워드 광고비 기반 SKU → 카테고리 자동 추정 (최다 광고비 키워드 = 카테고리)."""
+    body = await req.json()
+    cfg = get_config(); db = get_db()
+    shop = cfg.get("shop_id", "")
+    frm = body.get("from") or "2000-01-01"
+    to_ = body.get("to") or "9999-12-31"
+    from db import _ph
+    ph = _ph(1)
+    rows = []
+    with db.cursor() as cur:
+        cur.execute(
+            f"SELECT item_url, dimension_key, SUM(ad_cost) cost "
+            f"FROM ad_daily_performance "
+            f"WHERE shop_id={ph} AND ad_product='RPP' AND selection_type=4 "
+            f"AND item_url<>'' AND dimension_key<>'' "
+            f"AND report_date BETWEEN {ph} AND {ph} "
+            f"GROUP BY item_url, dimension_key "
+            f"ORDER BY item_url, SUM(ad_cost) DESC",
+            (shop, frm, to_))
+        rows = [dict(r) for r in cur.fetchall()]
+    db.close()
+    seen = set(); suggested = {}
+    for r in rows:
+        sku = r.get("item_url")
+        if sku in seen: continue
+        seen.add(sku); suggested[sku] = r.get("dimension_key")
+    existing = cfg.get("sku_categories") or {}
+    merged = dict(suggested); merged.update(existing)
+    return {"suggested": suggested, "merged": merged,
+            "new_count": len([k for k in suggested if k not in existing])}
+
+
+@app.post("/api/refill")
+async def api_refill(_u: dict = Depends(auth_required)):
+    """Vercel 환경에서는 백그라운드 thread refill 불가 (60s 제한).
+    → 클라이언트가 빠진 일자만 골라 백필 워커로 다시 取得하는 흐름으로 안내."""
+    raise HTTPException(
+        501,
+        "Vercel 환경에서는 サーバーサイド refill 미지원입니다. "
+        "拡張機能の백필 ボタンから빠진 期間を再取得してください。")
+
+
+@app.post("/api/export")
+async def api_export(_u: dict = Depends(auth_required)):
+    """Postgres 모드에서는 로컬 DB 파일이 없으므로 export 무의미."""
+    raise HTTPException(
+        501,
+        "Postgres モードでは local DB エクスポートは利用できません。"
+        "Supabase ダッシュボードから直接エクスポートしてください。")
 
 
 @app.get("/api/data")
