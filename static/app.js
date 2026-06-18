@@ -453,6 +453,21 @@ $("#btn-collect").onclick = async () => {
   if (collectMode === "day") { from = to = $("#in-day").value; }
   else { from = $("#in-from").value; to = $("#in-to").value; }
   if (!from || !to) return toast("日付を選択してください", true);
+
+  // 확장 워커 우선 (Vercel + ブラウザワーカー 環境의 정공법).
+  // sample 모드 또는 확장 미설치 시에만 옛 서버 사이드 /api/collect 폴백.
+  if (!sample) {
+    await ensureExt(1500);
+    if (EXT_READY) {
+      const st = await api.get("/api/status").catch(() => null);
+      const shopId = RAKUTEN_SHOP_ID || st?.shop_id;
+      if (!shopId) return toast("楽天 RMS にログインしていません — RMS広告ページを開いてから再実行してください", true);
+      const box = $("#collect-result"); box.className = "result-box"; box.classList.remove("hidden");
+      box.innerHTML = `<span class="spin"></span>ブラウザワーカーで取得中 (${from} 〜 ${to})…<br><span class="muted small">下の進捗バーで状態を確認できます</span>`;
+      return runBackfillViaExtension(from, to, shopId);
+    }
+  }
+
   const btn = $("#btn-collect"); btn.disabled = true;
   const box = $("#collect-result"); box.className = "result-box"; box.classList.remove("hidden");
   box.innerHTML = `<span class="spin"></span>${sample ? "サンプル生成" : "楽天から取得"}中… (${from} 〜 ${to})<br><span class="muted small">商品/キーワード CSVダウンロードに約1〜2分かかります</span>`;
