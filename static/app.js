@@ -14,6 +14,7 @@ window.addEventListener('message', (e) => {
     EXT_READY = true;
     EXT_ID = e.data.extensionId;
     console.log('[ext] ready, id=', EXT_ID);
+    if (typeof _updateSessionPill === "function") _updateSessionPill();
   }
   if (e.data.__rpp_bridge === 'response') {
     const resolve = _extReqMap.get(e.data.reqId);
@@ -29,6 +30,7 @@ window.addEventListener('message', (e) => {
       const pillShop = document.getElementById('pill-shop');
       if (pillShop) pillShop.textContent = `店舗 ${RAKUTEN_SHOP_ID}`;
       console.log('[ext] rakuten shop_id =', RAKUTEN_SHOP_ID);
+      if (typeof _updateSessionPill === "function") _updateSessionPill();
     }
     // BACKFILL_PROGRESS 이벤트 처리
     const cbs = _extEventListeners.get(e.data.payload.type) || [];
@@ -413,13 +415,30 @@ function switchAnalysisSub(s) {
 }
 
 /* ---------------- 상태/세션 ---------------- */
+// セッション 표시 — 브라우저 워커 시대의 진짜 신호 우선 (확장 + 楽天 shop_id).
+// 옛 서버 사이드 cookie 체크 (STATUS.session) 는 sample 폴백 흐름 진단용으로만 의미.
+function _updateSessionPill() {
+  const ps = document.getElementById("pill-session");
+  if (!ps) return;
+  if (EXT_READY && RAKUTEN_SHOP_ID) {
+    ps.textContent = "● 楽天連携 OK";
+    ps.className = "pill ok";
+    ps.title = "拡張機能 + 楽天 RMS セッション正常 — データ取得が可能です";
+  } else if (EXT_READY && !RAKUTEN_SHOP_ID) {
+    ps.textContent = "● 楽天 RMS にログインしてください";
+    ps.className = "pill err";
+    ps.title = "拡張機能は OK。楽天 RMS にログインして RMS 広告ページ(https://ad.rms.rakuten.co.jp/rpp/)を一度開いてください";
+  } else {
+    ps.textContent = "● 拡張機能が見つかりません";
+    ps.className = "pill err";
+    ps.title = "Rakuten RMS Analytics 拡張機能をインストール/有効化してください (chrome://extensions/)";
+  }
+}
 async function loadStatus() {
   try {
     STATUS = await api.get("/api/status");
-    $("#pill-shop").textContent = "店舗 " + STATUS.shop_id;
-    const ps = $("#pill-session");
-    ps.textContent = (STATUS.session ? "● セッション接続済み" : "● セッション " + (STATUS.session_msg || "なし"));
-    ps.className = "pill " + (STATUS.session ? "ok" : "err");
+    if (STATUS.shop_id) $("#pill-shop").textContent = "店舗 " + STATUS.shop_id;
+    _updateSessionPill();
     // Drive 경로가 폴백된 경우 안내
     if (STATUS.db_fallback) {
       toast(`⚠ Google Drive (${STATUS.db_configured}) が見つかりません。ローカル(${STATUS.db_path})に保存中`, true);
