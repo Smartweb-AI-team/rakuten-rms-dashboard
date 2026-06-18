@@ -681,6 +681,93 @@ $("#btn-backfill").onclick = async () => {
 };
 $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/cancel", {}); toast("キャンセルを要求しました"); };
 
+// 結果 박스 HTML 생성 (데이터 취득 박스 + 백필 완료 모달 공통)
+// opts: {from, to, totals, totalRows, ok, failed, elapsed, log}
+function buildCollectResultHTML(opts) {
+  const GROUPS = [
+    { title: "📦 RPP 集計", keys: ["全体広告", "キャンペーン別"] },
+    { title: "📊 RPP 明細", keys: ["商品別", "キーワード別"] },
+    { title: "🎯 その他", keys: ["CPA", "TDA"] },
+  ];
+  const card = (label, v) => {
+    const zero = !v;
+    return `<div class="cl-card" style="${zero ? 'opacity:.45' : ''}">
+      <div class="cl-l">${escapeHtml(label)}</div>
+      <div class="cl-v" style="${zero ? '' : 'color:#bf0000'}">${fmt(v || 0)}</div>
+    </div>`;
+  };
+  const groupsHTML = GROUPS.map(g => {
+    const cards = g.keys.map(k => card(k, opts.totals[k])).join("");
+    return `<div class="cl-section"><div class="cl-sec-h">${g.title}</div><div class="cl-cards">${cards}</div></div>`;
+  }).join("");
+
+  const logLines = (opts.log || []).slice(-30).reverse();
+  const logHtml = logLines.length
+    ? logLines.map(l => {
+        const isErr = l.includes('失敗') || l.includes('エラー');
+        return `<div style="font-size:11px;font-family:ui-monospace,monospace;padding:3px 7px;border-radius:3px;margin-bottom:2px;${isErr ? 'background:#fff4f4;color:#bf0000' : 'color:#5a6173'}">${escapeHtml(l)}</div>`;
+      }).join("")
+    : `<div class="muted small">— ログなし</div>`;
+
+  const rate = opts.elapsed && opts.totalRows
+    ? Math.round(opts.totalRows / Math.max(1, parseInt(opts.elapsed) || 1))
+    : 0;
+
+  return `
+    <div class="cl-head" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+      <span class="cl-ok">✅ 取得完了</span>
+      <span class="muted small">${escapeHtml(opts.from)} 〜 ${escapeHtml(opts.to)} ・ ⏱ ${escapeHtml(opts.elapsed)} ・ 成功 ${opts.ok} / 失敗 ${opts.failed}</span>
+    </div>
+    <div style="text-align:center;padding:18px 12px;background:linear-gradient(135deg,#fff5f5 0%,#ffffff 100%);border:1px solid #fed7d7;border-radius:10px;margin-bottom:14px">
+      <div class="muted small" style="margin-bottom:2px">合計取得件数</div>
+      <div style="font-size:36px;font-weight:800;color:#bf0000;line-height:1.1">${fmt(opts.totalRows)}<span style="font-size:14px;color:#7d8590;font-weight:600;margin-left:4px">件</span></div>
+      ${rate ? `<div class="muted small" style="margin-top:4px">平均 約 ${fmt(rate)} 件/秒</div>` : ""}
+    </div>
+    <div class="cl-grid" style="margin-bottom:10px">
+      ${groupsHTML}
+    </div>
+    <details style="margin-top:8px">
+      <summary style="cursor:pointer;font-weight:600;font-size:12.5px;padding:6px 0;user-select:none">📋 取得ログ (最新${logLines.length}件)</summary>
+      <div style="max-height:240px;overflow:auto;background:#fafbfc;border:1px solid #eef0f2;border-radius:6px;padding:6px;margin-top:6px;display:flex;flex-direction:column;gap:1px">
+        ${logHtml}
+      </div>
+    </details>
+  `;
+}
+
+// 백필 완료 모달 표시 (전체 결과 큰 화면)
+function showBackfillCompleteModal(opts) {
+  // 같은 ID 가 떠있으면 먼저 닫기
+  const existing = document.getElementById("bf-complete-modal");
+  if (existing) existing.remove();
+
+  const m = document.createElement("div");
+  m.id = "bf-complete-modal";
+  m.style.cssText = "position:fixed;inset:0;background:rgba(15,24,32,.55);z-index:9998;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(2px)";
+  m.innerHTML = `
+    <div style="background:#fff;border-radius:14px;padding:24px;width:min(760px,100%);max-height:90vh;overflow:auto;box-shadow:0 30px 80px rgba(0,0,0,.35)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <h2 style="margin:0;font-size:18px;font-weight:800">🎉 一括取得 完了</h2>
+        <button class="bfm-close" style="background:none;border:none;font-size:22px;cursor:pointer;color:#7d8590;line-height:1;padding:4px 10px">✕</button>
+      </div>
+      ${buildCollectResultHTML(opts)}
+      <div style="text-align:right;margin-top:14px;padding-top:14px;border-top:1px solid #eef0f2">
+        <button class="bfm-ok" style="background:#bf0000;color:#fff;border:none;border-radius:6px;padding:9px 22px;font-weight:700;cursor:pointer;font-size:13px">確認</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(m);
+  const close = () => {
+    m.remove();
+    document.removeEventListener("keydown", onEsc);
+  };
+  const onEsc = (e) => { if (e.key === "Escape") close(); };
+  m.querySelector(".bfm-close").onclick = close;
+  m.querySelector(".bfm-ok").onclick = close;
+  m.addEventListener("click", (e) => { if (e.target === m) close(); });
+  document.addEventListener("keydown", onEsc);
+}
+
 // 확장 워커로 백필 실행 (브라우저 = 본인 楽天 세션 직접 사용)
 //   opts.standalone        : true 시 #bf-progress / btn-backfill 등 백필 UI 일절 안 건드림
 //   opts.resultBoxSelector : standalone 시 진행 + 결과 둘 다 그릴 박스 (#collect-result)
@@ -728,31 +815,8 @@ async function runBackfillViaExtension(from, to, shopId, opts = {}) {
           rb.className = "result-box err";
           rb.innerHTML = `<div class="cl-head"><span class="cl-ok" style="color:#bf0000">⚠ 取得失敗</span><span class="muted small">${escapeHtml(info.error)}</span></div>`;
         } else {
-          const logLines = (info.log || []).slice(-20).reverse();
-          const logHtml = logLines.length
-            ? logLines.map(l => `<div class="${l.includes('失敗') || l.includes('エラー') ? 'fail' : ''}" style="font-size:11px;font-family:ui-monospace,monospace;padding:2px 6px;border-radius:3px;${l.includes('失敗')||l.includes('エラー')?'background:#fff4f4;color:#bf0000':'color:#5a6173'}">${escapeHtml(l)}</div>`).join("")
-            : `<div class="muted small">— ログなし</div>`;
-          const okCount = info.ok || 0;
-          const failedCount = info.failed || 0;
           rb.className = "result-box ok";
-          rb.innerHTML = `
-            <div class="cl-head"><span class="cl-ok">✅ 取得完了</span><span class="muted small">${escapeHtml(from)} 〜 ${escapeHtml(to)} ・ ⏱ ${fmtTime(elapsed)} ・ 成功 ${okCount} / 失敗 ${failedCount}</span></div>
-            <div class="cl-grid">
-              <div class="cl-section">
-                <div class="cl-sec-h">📦 RPP（楽天プロモーション広告）</div>
-                <div class="cl-cards">
-                  ${Object.entries(totals).map(([k,v]) => `<div class="cl-card"><div class="cl-l">${escapeHtml(k)}</div><div class="cl-v">${fmt(v)}</div></div>`).join("")}
-                  <div class="cl-card"><div class="cl-l">累計</div><div class="cl-v">${fmt(info.rows || 0)}</div></div>
-                </div>
-              </div>
-              <div class="cl-section">
-                <div class="cl-sec-h">📋 取得ログ（最新20件）</div>
-                <div class="cl-log" style="max-height:200px;overflow:auto;background:#fafbfc;border:1px solid #eef0f2;border-radius:6px;padding:6px;display:flex;flex-direction:column;gap:2px">
-                  ${logHtml}
-                </div>
-              </div>
-            </div>
-          `;
+          rb.innerHTML = buildCollectResultHTML({ from, to, totals, totalRows: info.rows || 0, ok: info.ok || 0, failed: info.failed || 0, elapsed: fmtTime(elapsed), log: info.log || [] });
         }
       } else {
         rb.className = "result-box";
@@ -798,6 +862,19 @@ async function runBackfillViaExtension(from, to, shopId, opts = {}) {
       if (info.error) toast("エラー: " + info.error, true);
       else toast(`完了 — ${fmt(info.rows || 0)}件 取得`, "ok");
       loadStatus(); loadCoverage();
+      // 백필(!standalone) 완료 시 전체 결과 모달
+      if (!standalone && !info.error) {
+        const elapsedSec = Math.floor((Date.now() - startTs) / 1000);
+        showBackfillCompleteModal({
+          from, to,
+          totals: lastProgress.totals || {},
+          totalRows: info.rows || 0,
+          ok: info.ok || 0,
+          failed: info.failed || 0,
+          elapsed: fmtTime(elapsedSec),
+          log: info.log || [],
+        });
+      }
     }
   });
 
