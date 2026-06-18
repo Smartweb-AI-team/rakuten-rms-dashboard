@@ -114,6 +114,9 @@ def _normalize_rpp_csv_generic(csv_text: str, shop_id: str,
     col_url = find_col("商品ページURL") or find_col("商品URL") or find_col("ページURL")
     col_kwd = find_col("キーワード", exclude=("CPC",))
     col_item_no = find_col("商品管理番号")
+    # 캠페인명 — 헤더에 「キャンペーン」 또는 「キャンペーン名」 형태
+    col_campaign = (find_col("キャンペーン名") or
+                    find_col("キャンペーン", exclude=("ID", "コード", "種別")))
     # 「CTR(%)」 — 다른 헤더에는 「CTR」 없음
     col_ctr = find_col("CTR")
 
@@ -166,10 +169,11 @@ def _normalize_rpp_csv_generic(csv_text: str, shop_id: str,
         ctr_raw = _csv_num(row.get(col_ctr) if col_ctr else None)
         ctr = (ctr_raw / 100.0) if ctr_raw else None
 
+        campaign_name = ((row.get(col_campaign) if col_campaign else None) or None)
         base = {
             "shop_id": shop_id, "ad_product": "RPP", "selection_type": selection_type,
             "report_date": report_date, "campaign_id": "",
-            "dimension_key": dim_key, "campaign_name": None,
+            "dimension_key": dim_key, "campaign_name": campaign_name,
             "item_url": item_url,
         }
 
@@ -205,6 +209,7 @@ def _normalize_rpp_csv_generic(csv_text: str, shop_id: str,
     LAST_RPP_CSV_PREVIEW["resolved_columns"]["_url"] = col_url
     LAST_RPP_CSV_PREVIEW["resolved_columns"]["_keyword"] = col_kwd
     LAST_RPP_CSV_PREVIEW["resolved_columns"]["_ctr"] = col_ctr
+    LAST_RPP_CSV_PREVIEW["resolved_columns"]["_campaign"] = col_campaign
     LAST_RPP_CSV_PREVIEW["normalized_count"] = len(out)
     return out
 

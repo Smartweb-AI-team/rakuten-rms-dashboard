@@ -354,32 +354,146 @@ def _pct(cur, prev):
     try: return round((cur - prev) / prev * 100, 1)
     except: return None
 
+
+def _build_narrative(date_from, date_to, ad_product, cur, deltas, movers, by_roas):
+    """1段落の自然語サマリー(コンサル風)。"""
+    def yen(v): return f"{int(v):,}円" if v else "—"
+    def pct_(v): return f"{round(v * 100, 0)}%" if v is not None else "—"
+    def dpct(v): return f"{'増加' if v > 0 else '減少'}{abs(v)}%" if v is not None else "前期比なし"
+    parts = []
+    parts.append(
+        f"{date_from}〜{date_to}の{ad_product or '全広告'}は、"
+        f"売上 {yen(cur.get('gms'))}（前期比 {dpct(deltas.get('gms'))}）、"
+        f"広告費 {yen(cur.get('ad_cost'))}（{dpct(deltas.get('ad_cost'))}）、"
+        f"ROAS {pct_(cur.get('roas'))}（{dpct(deltas.get('roas'))}）となりました。")
+    if deltas.get("roas") is not None:
+        if deltas["roas"] >= 10:
+            parts.append(f"ROASは前期比{abs(deltas['roas'])}%改善しており、広告効率は好調局面にあります。")
+        elif deltas["roas"] <= -10:
+            parts.append(f"ROASは前期比で{abs(deltas['roas'])}%低下しており、費用対効果の悪化が見られます。")
+        else:
+            parts.append("ROASは前期と概ね横ばいで推移しています。")
+    if movers and movers[0].get("cost_change_pct") is not None:
+        m = movers[0]
+        direction = "増額" if m["cost_change_pct"] > 0 else "減額"
+        parts.append(
+            f"特に変動が大きかったのは「{m['campaign_name']}」で、"
+            f"広告費が{direction}（{dpct(m['cost_change_pct'])}）しました。")
+    if by_roas:
+        best = max(by_roas, key=lambda x: x["roas"])
+        worst = min(by_roas, key=lambda x: x["roas"])
+        parts.append(
+            f"効率トップは「{best['campaign_name']}」(ROAS {pct_(best['roas'])})、"
+            f"最低は「{worst['campaign_name']}」(ROAS {pct_(worst['roas'])})となっています。")
+    if deltas.get("ad_cost") and deltas.get("gms") and deltas["ad_cost"] > 0 and deltas["gms"] < deltas["ad_cost"]:
+        parts.append("広告費の伸びに売上が追いついておらず、低効率キャンペーンの予算見直しを検討する余地があります。")
+    elif deltas.get("roas") is not None and deltas["roas"] >= 10:
+        parts.append("高ROAS局面のため、上位効率キャンペーンへの予算増額により売上の更なる積み上げが期待できます。")
+    return " ".join(parts)
+
+
+def _build_insights(shop_id, date_from, date_to, ad_product, selection_type,
+                    cv_window="720h", user_segment="all"):
+    """대시보드/레포트 인사이트 빌드 (옛 local_server.build_insights 포팅)."""
+    db = get_db()
+    cur = db.kpis(shop_id, date_from, date_to, ad_product, selection_type,
+                  user_segment=user_segment, cv_window=cv_window)
+    days = (date.fromisoformat(date_to) - date.fromisoformat(date_from)).days + 1
+    prev_to = (date.fromisoformat(date_from) - timedelta(days=1)).isoformat()
+    prev_from = (date.fromisoformat(prev_to) - timedelta(days=days - 1)).isoformat()
+    prev = db.kpis(shop_id, prev_from, prev_to, ad_product, selection_type,
+                   user_segment=user_segment, cv_window=cv_window)
+    if ad_product == "TDA":
+        cur["cvr"] = prev["cvr"] = None
+    deltas = {k: _pct(cur.get(k), prev.get(k))
+              for k in ("ad_cost", "gms", "clicks", "cv", "roas", "cpc")}
+    cur_top_rows = db.top_dimensions(shop_id, date_from, date_to, ad_product, 2,
+                                    user_segment=user_segment, cv_window=cv_window, limit=50)
+    prev_top_rows = db.top_dimensions(shop_id, prev_from, prev_to, ad_product, 2,
+                                     user_segment=user_segment, cv_window=cv_window, limit=50)
+    cur_top = {r["campaign_name"]: r for r in cur_top_rows if r.get("campaign_name")}
+    prev_top = {r["campaign_name"]: r for r in prev_top_rows if r.get("campaign_name")}
+    movers = []
+    for name, r in cur_top.items():
+        p = prev_top.get(name)
+        d_cost = _pct(r.get("ad_cost"), p.get("ad_cost")) if p else None
+        d_roas = _pct(r.get("roas"), p.get("roas")) if (p and p.get("roas")) else None
+        movers.append({"campaign_name": name, "ad_cost": r.get("ad_cost"),
+                       "roas": r.get("roas"), "cost_change_pct": d_cost,
+                       "roas_change_pct": d_roas})
+    movers.sort(key=lambda x: abs(x["cost_change_pct"] or 0), reverse=True)
+    bullets, actions = [], []
+    def fmt_pct(p):
+        if p is None: return "前期間比なし"
+        arrow = "▲" if p > 0 else ("▼" if p < 0 else "—")
+        return f"{arrow}{abs(p)}%"
+    def yen(v): return f"¥{int(v):,}" if v is not None else "-"
+    def pct(v, d=1):
+        return f"{round(v * 100, d)}%" if v is not None else "-"
+    bullets.append(f"売上 {yen(cur.get('gms'))} ({fmt_pct(deltas['gms'])}) · "
+                   f"広告費 {yen(cur.get('ad_cost'))} ({fmt_pct(deltas['ad_cost'])})")
+    bullets.append(f"クリック {int(cur.get('clicks') or 0):,} ({fmt_pct(deltas['clicks'])}) · "
+                   f"CTR {pct(cur.get('ctr'), 2)} · CV {int(cur.get('cv') or 0):,} ({fmt_pct(deltas['cv'])}) · "
+                   f"CVR {pct(cur.get('cvr'), 2)}")
+    bullets.append(f"ROAS {pct(cur.get('roas'), 0)} ({fmt_pct(deltas['roas'])}) · "
+                   f"CPC {yen(cur.get('cpc'))} ({fmt_pct(deltas['cpc'])}) · CPA {yen(cur.get('cpa'))}")
+    if deltas["roas"] is not None and deltas["roas"] <= -10:
+        bullets.append("⚠ ROASが前期間比で二桁下落 — 費用対効果が低下しています。")
+        if deltas["ad_cost"] and deltas["ad_cost"] > 0 and (deltas["gms"] or 0) < deltas["ad_cost"]:
+            actions.append("広告費の増加に売上が追いついていません — 低効率キャンペーンの入札・予算の縮小を検討。")
+    elif deltas["roas"] is not None and deltas["roas"] >= 10:
+        bullets.append("✅ ROASが前期間比で二桁改善 — 効率の良い局面です。")
+        actions.append("ROAS上昇局面 — 高効率キャンペーンの予算増額を検討。")
+    if deltas["clicks"] is not None and deltas["clicks"] <= -15:
+        actions.append("クリックが大幅に減少 — 表示回数・キーワード順位・季節性を確認。")
+    by_roas = [m for m in cur_top.values() if m.get("roas") and (m.get("ad_cost") or 0) >= 1]
+    if by_roas:
+        best = max(by_roas, key=lambda x: x["roas"])
+        worst = min(by_roas, key=lambda x: x["roas"])
+        bullets.append(f"効率トップ '{best['campaign_name']}' ROAS {pct(best['roas'], 0)} · "
+                       f"最低 '{worst['campaign_name']}' ROAS {pct(worst['roas'], 0)}")
+        if worst["roas"] and worst["roas"] < 1.5:
+            actions.append(f"'{worst['campaign_name']}' ROAS {pct(worst['roas'], 0)}（150%未満）— 構成・クリエイティブ見直し、または比重縮小を検討。")
+    if movers and movers[0]["cost_change_pct"] is not None:
+        m = movers[0]
+        bullets.append(f"変動が最大のキャンペーン '{m['campaign_name']}' 広告費 {fmt_pct(m['cost_change_pct'])}"
+                       f"{'、ROAS ' + fmt_pct(m['roas_change_pct']) if m['roas_change_pct'] is not None else ''}")
+    # 노출 신선도
+    impr_last = None
+    try:
+        from db import _ph
+        ph = _ph(1)
+        with db.cursor() as cur_:
+            cur_.execute(
+                f"SELECT MAX(report_date) FROM ad_daily_performance "
+                f"WHERE shop_id={ph} AND ad_product={ph} AND selection_type=1 "
+                f"AND user_segment='all' AND impressions IS NOT NULL AND impressions>0",
+                (shop_id, ad_product or "RPP"))
+            row = cur_.fetchone()
+            impr_last = (row[0] if row else None)
+    except Exception:
+        pass
+    db.close()
+    headline = (f"{date_from}〜{date_to} · {ad_product or '全広告'} · "
+                f"売上 {yen(cur.get('gms'))} / 広告費 {yen(cur.get('ad_cost'))} / "
+                f"ROAS {pct(cur.get('roas'), 0)}")
+    return {
+        "headline": headline, "current": cur, "previous": prev,
+        "previous_range": {"from": prev_from, "to": prev_to},
+        "deltas": deltas, "movers": movers[:8], "bullets": bullets,
+        "actions": actions,
+        "narrative": _build_narrative(date_from, date_to, ad_product, cur, deltas, movers, by_roas),
+        "note": "集計は前日まで確定。過去分は後日変動する場合があります。",
+        "impressions_last_date": impr_last,
+    }
+
 @app.get("/api/kpis")
 def api_kpis(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
-    cfg = get_config(); db = get_db()
+    cfg = get_config()
     shop = cfg.get("shop_id", "")
-    cur = db.kpis(shop, p["from"], p["to"], ad_product=p["product"],
-                  selection_type=p["selection_type"],
-                  user_segment=p["segment"], cv_window=p["window"])
-    # 비교 기간 자동 계산 (같은 길이의 직전 기간)
-    days = (date.fromisoformat(p["to"]) - date.fromisoformat(p["from"])).days + 1
-    prev_to = (date.fromisoformat(p["from"]) - timedelta(days=1)).isoformat()
-    prev_from = (date.fromisoformat(prev_to) - timedelta(days=days - 1)).isoformat()
-    prev = db.kpis(shop, prev_from, prev_to, ad_product=p["product"],
-                   selection_type=p["selection_type"],
-                   user_segment=p["segment"], cv_window=p["window"])
-    deltas = {k: _pct(cur.get(k), prev.get(k))
-              for k in ("ad_cost", "gms", "clicks", "cv", "roas", "cpc")}
-    db.close()
-    return {
-        "current": cur, "previous": prev,
-        "previous_range": {"from": prev_from, "to": prev_to},
-        "deltas": deltas,
-        "movers": [], "bullets": [], "actions": [],
-        "headline": "", "narrative": "", "note": "",
-        "impressions_last_date": None,
-    }
+    return _build_insights(shop, p["from"], p["to"], p["product"], p["selection_type"],
+                           cv_window=p["window"], user_segment=p["segment"])
 
 @app.get("/api/series")
 def api_series(req: Request, _u: dict = Depends(auth_required)):
