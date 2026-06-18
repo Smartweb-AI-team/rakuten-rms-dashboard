@@ -132,12 +132,24 @@ function _humanizeAuthError(j, status) {
   return `<b>ログイン失敗 (HTTP ${status})</b><br><span style="opacity:.7">${escapeHtml(desc || code || JSON.stringify(j))}</span>`;
 }
 
+function _resolveLoginEmail(rawInput, cfg) {
+  // ID 만 입력하는 흐름: LOGIN_DOMAIN 설정되어 있고 입력에 @ 없으면 자동 부착
+  const raw = (rawInput || "").trim();
+  if (!raw) return "";
+  if (raw.includes("@")) return raw;  // 이미 이메일 형태
+  const dom = (cfg.login_domain || "").trim().replace(/^@/, "");
+  if (!dom) return raw;  // 도메인 미설정 → 그대로 (Supabase 가 검증 실패하면 에러)
+  return `${raw}@${dom}`;
+}
+
 async function doLogin() {
   const cfg = await loadAuthConfig();
-  const email = document.getElementById("login-email").value.trim();
+  const rawInput = document.getElementById("login-email").value.trim();
+  const email = _resolveLoginEmail(rawInput, cfg);
   const pwd = document.getElementById("login-password").value;
   _hideLoginError();
-  if (!email) { _showLoginError("<b>メールアドレスを入力してください</b>"); return; }
+  const isIdMode = !!cfg.login_domain;
+  if (!rawInput) { _showLoginError(`<b>${isIdMode ? "ユーザーID" : "メールアドレス"}を入力してください</b>`); return; }
   if (!pwd)   { _showLoginError("<b>パスワードを入力してください</b>"); return; }
   if (!cfg.supabase_url) { _showLoginError("<b>サーバ設定エラー</b><br>SUPABASE_URL が未設定です"); return; }
   if (!cfg.supabase_anon_key) { _showLoginError("<b>サーバ設定エラー</b><br>SUPABASE_ANON_KEY が未設定です"); return; }
@@ -196,6 +208,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 인증 활성 여부 확인 후 모달 표시 결정
   const cfg = await loadAuthConfig();
   if (cfg.auth_disabled) return; // 로컬 server.py
+  // 로그인 폼 라벨 (ID 모드 vs 이메일 모드)
+  if (cfg.login_domain) {
+    const lbl = document.getElementById("login-email-label");
+    const inp = document.getElementById("login-email");
+    const hint = document.getElementById("login-email-hint");
+    if (lbl) lbl.textContent = "ユーザーID";
+    if (inp) { inp.placeholder = "yourname"; inp.type = "text"; }
+    if (hint) {
+      hint.textContent = `※ 「ID」だけ入力してください (内部で @${cfg.login_domain} を付加します)`;
+      hint.style.display = "block";
+    }
+  }
   const tok = sessionStorage.getItem("sb_access_token");
   if (!tok) showLogin();
   // 사이드바 사용자 pill + 로그아웃
@@ -3016,6 +3040,7 @@ function loadReportView() {
   runReport();
 }
 let cmpPeriodPreset = "prev";
+let LAST_REPORT = null;  // 마지막 runReport / runReportCompare 결과 캐시 (PPT 가 사용)
 async function loadPptxLib() {
   if (window.PptxGenJS) return window.PptxGenJS;
   return new Promise((res, rej) => {
@@ -3028,28 +3053,36 @@ async function loadPptxLib() {
 }
 async function exportPptx() {
   try {
+    if (!LAST_REPORT) {
+      toast("先に「適用」を押してレポートを生成してください", true);
+      return;
+    }
     toast("PowerPoint生成中…", "ok");
     const Pptx = await loadPptxLib();
-    const f = readFilters("#rep-filters"), win = f.window || "720h", seg = f.segment || "all";
-    const q = (fr, to) => `from=${fr}&to=${to}&product=${f.product}&window=${win}&segment=${seg}`;
-    const days = (new Date(f.to) - new Date(f.from)) / 86400000 + 1;
-    const pTo = addDays(f.from, -1), pFrom = addDays(pTo, -(days - 1));
-    const [ins, series, sPrev, tc, ti, tk, wk] = await Promise.all([
-      api.get(`/api/kpis?${q(f.from, f.to)}&selection_type=1`),
-      api.get(`/api/series?${q(f.from, f.to)}&selection_type=1`),
-      api.get(`/api/series?${q(pFrom, pTo)}&selection_type=1`).catch(() => ({ series: [] })),
-      api.get(`/api/top?${q(f.from, f.to)}&selection_type=2&order_by=ad_cost&limit=8`),
-      api.get(`/api/top?${q(f.from, f.to)}&selection_type=3&order_by=ad_cost&limit=8`),
-      api.get(`/api/top?${q(f.from, f.to)}&selection_type=4&order_by=ad_cost&limit=8`),
-      api.get(`/api/weekday?${q(f.from, f.to)}`),
-    ]);
-    const c = ins.current || {}, dl = ins.deltas || {};
+    const R = LAST_REPORT;
+    const f = R.f;
     const client = localStorage.getItem("rep_client") || "楽天RMS 広告アナリティクス";
-    const subtitle = localStorage.getItem("rep_subtitle") || "広告パフォーマンス・レポート";
+    const subtitle = localStorage.getItem("rep_subtitle") || (R.mode === "compare" ? "広告パフォーマンス・比較レポート" : "広告パフォーマンス・レポート");
+    const logo = localStorage.getItem("rep_logo");
+
+    // 모드별 변수 매핑 (LAST_REPORT 에서 추출)
+    const isCompare = R.mode === "compare";
+    const ins = isCompare ? R.A : R.ins;
+    const insB = isCompare ? R.B : null;
+    const c = ins.current || {}, dl = ins.deltas || {};
+    const cB = insB ? (insB.current || {}) : null;
+    const series = { series: isCompare ? (R.sA || []) : (R.series || []) };
+    const seriesB = isCompare ? (R.sB || []) : null;
+    const tc = { rows: isCompare ? (R.tcA || []) : (R.tc || []) };
+    const ti = { rows: isCompare ? (R.tiA || []) : (R.ti || []) };
+    const tk = { rows: isCompare ? (R.tkA || []) : (R.tk || []) };
+    const wk = { weekday: R.wk || [] };
     const narrative = localStorage.getItem("rep_narrative_" + f.from + "_" + f.to) || ins.narrative || "";
     const bullets = ins.bullets || [];
     const actions = ins.actions || [];
-    const logo = localStorage.getItem("rep_logo");
+    const kwDiff = R.kwDiff || null;
+    const periodALabel = isCompare ? `期間A ${f.from} 〜 ${f.to}` : "";
+    const periodBLabel = isCompare && R.f ? `期間B ${R.pFrom || ""} 〜 ${R.pTo || ""}` : "";
 
     const p = new Pptx();
     p.layout = "LAYOUT_WIDE";  // 13.33 × 7.5 inch
@@ -3240,6 +3273,91 @@ async function exportPptx() {
     topSlide("TOP 商品", ti.rows || [], "商品");
     topSlide("TOP キーワード", tk.rows || [], "キーワード");
 
+    /* ───────────── 비교 모드 전용 슬라이드 ───────────── */
+    if (isCompare) {
+      // (A) KPI 比較 — A vs B 메트릭 카드 가로 2컬럼
+      {
+        const s = p.addSlide(); slides.push(s);
+        addPageHeader(s, "KPI 比較 (期間A vs 期間B)");
+        s.addText(periodALabel, { x: 0.55, y: 1.18, w: 6.1, h: 0.3, fontSize: 10, bold: true, color: RED });
+        s.addText(periodBLabel, { x: 6.7, y: 1.18, w: 6.1, h: 0.3, fontSize: 10, bold: true, color: ACC1 });
+        const KEYS = [
+          { k: "gms",     label: "売上 (GMS)",  fmt: yen },
+          { k: "ad_cost", label: "広告費",       fmt: yen },
+          { k: "clicks",  label: "クリック",     fmt: fmtN },
+          { k: "cv",      label: "CV",          fmt: fmtN },
+          { k: "roas",    label: "ROAS",        fmt: fmtRoasV },
+          { k: "cpa",     label: "CPA",         fmt: yen },
+        ];
+        // 6행 × 4열 (라벨 / 期間A / 期間B / Δ)
+        const tbl = [[
+          { text: "指標",  options: { bold: true, fill: { color: BG }, fontSize: 10, color: GRAY } },
+          { text: "期間A", options: { bold: true, fill: { color: BG }, fontSize: 10, color: RED, align: "right" } },
+          { text: "期間B", options: { bold: true, fill: { color: BG }, fontSize: 10, color: ACC1, align: "right" } },
+          { text: "差分",  options: { bold: true, fill: { color: BG }, fontSize: 10, color: GRAY, align: "right" } },
+        ]];
+        KEYS.forEach(K => {
+          const va = c[K.k], vb = cB[K.k];
+          const delta = (va != null && vb) ? Math.round((va - vb) / Math.abs(vb) * 1000) / 10 : null;
+          const dp = dPill(delta);
+          tbl.push([
+            { text: K.label, options: { color: DARK, fontSize: 12, bold: true } },
+            { text: K.fmt(va), options: { align: "right", color: INK, fontSize: 12 } },
+            { text: K.fmt(vb), options: { align: "right", color: INK, fontSize: 12 } },
+            { text: dp.text, options: { align: "right", bold: true, color: dp.color, fontSize: 12 } },
+          ]);
+        });
+        s.addTable(tbl, { x: 0.55, y: 1.6, w: 12.23, rowH: 0.5, border: { type: "solid", pt: 0.5, color: LINE }, fontFace: "Yu Gothic UI" });
+      }
+
+      // (B) 売上 推移 比較 (A/B 두 라인)
+      if (series.series.length || seriesB.length) {
+        const s = p.addSlide(); slides.push(s);
+        addPageHeader(s, "売上 推移 比較");
+        const maxLen = Math.max(series.series.length, seriesB.length);
+        const labels = Array.from({ length: maxLen }, (_, i) => `Day ${i + 1}`);
+        const data = [
+          { name: "期間A 売上", labels, values: series.series.map(r => r.gms || 0) },
+          { name: "期間B 売上", labels, values: seriesB.map(r => r.gms || 0) },
+        ];
+        s.addChart(p.ChartType.line, data, {
+          x: 0.55, y: 1.45, w: 12.23, h: 5.5,
+          chartColors: [RED, ACC1],
+          showLegend: true, legendPos: "t", legendFontSize: 11, legendColor: GRAY,
+          catAxisLabelFontSize: 9, valAxisLabelFontSize: 9,
+          lineSize: 2.5, lineDataSymbolSize: 5,
+          valGridLine: { color: LINE, style: "solid" },
+        });
+      }
+
+      // (C) キーワード 変化 (kwDiff: entered / gone)
+      if (kwDiff && ((kwDiff.entered || []).length || (kwDiff.gone || []).length)) {
+        const s = p.addSlide(); slides.push(s);
+        addPageHeader(s, "キーワード 変化");
+        s.addText("★ 新規キーワード (期間B → A)", { x: 0.55, y: 1.4, w: 6.1, h: 0.4, fontSize: 12, bold: true, color: GOOD });
+        s.addText("◆ 消失キーワード (期間A のみ)", { x: 6.7, y: 1.4, w: 6.1, h: 0.4, fontSize: 12, bold: true, color: BAD });
+        const mkTbl = (rows, accent) => {
+          const T = [[
+            { text: "キーワード", options: { bold: true, fill: { color: BG }, fontSize: 10, color: DARK } },
+            { text: "広告費", options: { bold: true, fill: { color: BG }, fontSize: 10, color: DARK, align: "right" } },
+            { text: "売上", options: { bold: true, fill: { color: BG }, fontSize: 10, color: DARK, align: "right" } },
+          ]];
+          rows.slice(0, 12).forEach(r => T.push([
+            { text: (r.dimension_key || "—").slice(0, 30), options: { color: INK, fontSize: 10 } },
+            { text: yen(r.cost), options: { align: "right", color: INK, fontSize: 10 } },
+            { text: yen(r.gms), options: { align: "right", color: accent, fontSize: 10, bold: true } },
+          ]));
+          return T;
+        };
+        s.addTable(mkTbl(kwDiff.entered || [], GOOD),
+                   { x: 0.55, y: 1.85, w: 6.1, rowH: 0.32, fontSize: 10, fontFace: "Yu Gothic UI",
+                     border: { type: "solid", pt: 0.5, color: LINE } });
+        s.addTable(mkTbl(kwDiff.gone || [], BAD),
+                   { x: 6.7, y: 1.85, w: 6.13, rowH: 0.32, fontSize: 10, fontFace: "Yu Gothic UI",
+                     border: { type: "solid", pt: 0.5, color: LINE } });
+      }
+    }
+
     /* ─────────────────────── ⑨ アクション提案 ─────────────────────── */
     if (actions && actions.length) {
       const s = p.addSlide(); slides.push(s);
@@ -3340,6 +3458,15 @@ async function runReport() {
       api.get(`/api/keyword_diff?${q(f.from, f.to)}&aFrom=${pFrom}&aTo=${pTo}`),
       api.get(`/api/seasonality?${q(f.from, f.to)}`).catch(() => null),
       api.get(`/api/item_keywords?from=${f.from}&to=${f.to}&window=${win}&segment=${seg}`).catch(() => ({ items: [] }))]);
+    // 마지막 렌더 결과 캐싱 — PPT/PDF 가 같은 데이터 사용
+    LAST_REPORT = {
+      mode: "normal",
+      f, ins, insP, insNew, insExist,
+      pFrom, pTo,
+      series: series.series, tc: tc.rows, ti: ti.rows, tk: tk.rows,
+      tcP: tcP.rows, tiP: tiP.rows, tkP: tkP.rows,
+      wk: wk.weekday, outliers: outl.outliers, kwDiff, season, mx,
+    };
     renderReport(f, { cur: ins, prev: insP, prevRange: { from: pFrom, to: pTo } }, series.series, tc.rows, ti.rows, tk.rows, insNew, insExist, wk.weekday, outl.outliers, kwDiff, season, null, { camp: tcP.rows, item: tiP.rows, kw: tkP.rows }, null, mx);
   } catch (e) { toast("レポート生成に失敗: " + e.message, true); }
 }
@@ -3531,6 +3658,16 @@ async function runReportCompare(f, q, pFrom, pTo) {
       api.get(`/api/categories?${q(pFrom, pTo)}`).catch(() => ({ categories: [] })),
       api.get(`/api/item_keywords?from=${f.from}&to=${f.to}&window=${win}&segment=${seg}`).catch(() => ({ items: [] })),
       api.get(`/api/item_keywords?from=${pFrom}&to=${pTo}&window=${win}&segment=${seg}`).catch(() => ({ items: [] }))]);
+    LAST_REPORT = {
+      mode: "compare",
+      f, pFrom, pTo,
+      A: insA, B: insB,
+      sA: sA.series, sB: sB.series,
+      tcA: tcA.rows, tcB: tcB.rows,
+      tiA: tiA.rows, tiB: tiB.rows,
+      tkA: tkA.rows, tkB: tkB.rows,
+      kwDiff, catA, catB, mxA, mxB,
+    };
     renderReportCompareNew(f, {
       A: insA, B: insB, sA: sA.series, sB: sB.series,
       camp: { A: tcA.rows, B: tcB.rows }, item: { A: tiA.rows, B: tiB.rows }, kw: { A: tkA.rows, B: tkB.rows },

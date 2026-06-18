@@ -1289,6 +1289,9 @@ def api_auth_config():
         "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),
         "auth_disabled": AUTH_DISABLED,
         "admin_email": os.environ.get("ADMIN_EMAIL", ""),
+        # ID 만 입력하는 흐름 (옵션 B): 클라가 자동으로 @LOGIN_DOMAIN 부착
+        # 비어있으면 그대로 이메일로 입력
+        "login_domain": os.environ.get("LOGIN_DOMAIN", ""),
     }
 
 # ----------------------------- Static -----------------------------
