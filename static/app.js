@@ -475,10 +475,26 @@ async function _fbReloadList() {
   const list = document.getElementById("fb-list");
   list.innerHTML = `<div class="fb-empty">読み込み中…</div>`;
   try {
-    const r = await _sbFetch(
-      "feedback_posts?select=*,feedback_replies(id)&order=created_at.desc&limit=200");
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    FB_STATE.posts = await r.json();
+    // 두 호출 병렬: 글 목록 + 답글 (id, post_id 만 가져와 카운트)
+    const [rPosts, rReplies] = await Promise.all([
+      _sbFetch("feedback_posts?select=*&order=created_at.desc&limit=200"),
+      _sbFetch("feedback_replies?select=id,post_id"),
+    ]);
+    if (!rPosts.ok) {
+      const txt = await rPosts.text().catch(() => "");
+      if (rPosts.status === 404) {
+        list.innerHTML = `<div class="fb-empty">テーブル未作成です。<br><b>Supabase Dashboard → SQL Editor</b> で<br><code>supabase_feedback_schema.sql</code> を実行してください。</div>`;
+        return;
+      }
+      throw new Error("HTTP " + rPosts.status + " " + txt.slice(0, 100));
+    }
+    FB_STATE.posts = await rPosts.json();
+    // 답글 카운트 맵
+    FB_STATE.replyCounts = {};
+    if (rReplies.ok) {
+      const replies = await rReplies.json();
+      for (const r of replies) FB_STATE.replyCounts[r.post_id] = (FB_STATE.replyCounts[r.post_id] || 0) + 1;
+    }
     _fbRenderList();
   } catch (e) {
     list.innerHTML = `<div class="fb-empty">読み込み失敗: ${escapeHtml(String(e.message || e))}</div>`;
@@ -500,7 +516,7 @@ function _fbRenderList() {
   list.innerHTML = filtered.map(p => {
     const cat = FB_CAT_META[p.category] || FB_CAT_META.other;
     const st = FB_STATUS_META[p.status] || FB_STATUS_META.open;
-    const repCount = (p.feedback_replies || []).length;
+    const repCount = (FB_STATE.replyCounts || {})[p.id] || 0;
     const isSel = FB_STATE.selectedId === p.id;
     const author = (p.user_email || "—").split("@")[0];
     return `
@@ -642,14 +658,7 @@ function _fbRenderDetail(post, replies) {
         }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
-      // 상태 자동 "answered" (글쓴이가 아닌 사람이 답글 단 경우)
-      if (post.status === "open" && me?.id !== post.user_id) {
-        await _sbFetch(`feedback_posts?id=eq.${post.id}`, {
-          method: "PATCH",
-          headers: { "Prefer": "return=minimal" },
-          body: JSON.stringify({ status: "answered" }),
-        }).catch(() => {});
-      }
+      // 状態 자동 전환은 하지 않음 — 글쓴이가 「状態 ○○」 버튼으로 수동 변경
       toast("返信しました", "ok");
       await _fbReloadList();
       _fbSelectPost(post.id);
@@ -696,6 +705,20 @@ function _fbRenderDetail(post, replies) {
   });
 }
 
+function _fbHandleClipboardImages(items) {
+  // ClipboardData.items 또는 DataTransferItem 배열에서 image/* 찾아 첨부
+  for (const it of items) {
+    if (it.kind === "file" && it.type && it.type.startsWith("image/")) {
+      const f = it.getAsFile();
+      if (f) {
+        // 잘려있는 이름 보강 (clipboard image 는 보통 image.png)
+        const named = new File([f], f.name || `screenshot_${Date.now()}.png`, { type: f.type });
+        _fbHandleFiles([named]);
+      }
+    }
+  }
+}
+
 function _fbBindEvents() {
   document.getElementById("fb-search").oninput = (e) => {
     FB_STATE.query = e.target.value;
@@ -733,6 +756,14 @@ function _fbBindEvents() {
     _fbHandleFiles(e.dataTransfer.files);
   };
   document.getElementById("fb-submit").onclick = _fbSubmitPost;
+
+  // Ctrl+V / Cmd+V 로 클립보드 이미지 자동 첨부 (모달 열려있을 때)
+  document.addEventListener("paste", (e) => {
+    const modal = document.getElementById("fb-modal");
+    if (modal.classList.contains("hidden")) return;
+    if (!e.clipboardData) return;
+    _fbHandleClipboardImages(e.clipboardData.items);
+  });
 }
 
 async function _fbHandleFiles(files) {
