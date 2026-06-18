@@ -484,7 +484,7 @@ $("#btn-collect").onclick = async () => {
       const box = $("#collect-result"); box.className = "result-box"; box.classList.remove("hidden");
       box.innerHTML = `<span class="spin"></span>ブラウザワーカーで取得中 (${from} 〜 ${to})…<br><span class="muted small">下の進捗バーで状態を確認できます</span>`;
       $("#btn-collect").disabled = true;
-      return runBackfillViaExtension(from, to, shopId, { resultBoxSelector: '#collect-result', label: '取得' });
+      return runBackfillViaExtension(from, to, shopId, { resultBoxSelector: '#collect-result', label: '取得', standalone: true });
     }
   }
 
@@ -682,79 +682,105 @@ $("#btn-backfill").onclick = async () => {
 $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/cancel", {}); toast("キャンセルを要求しました"); };
 
 // 확장 워커로 백필 실행 (브라우저 = 본인 楽天 세션 직접 사용)
+//   opts.standalone        : true 시 #bf-progress / btn-backfill 등 백필 UI 일절 안 건드림
+//   opts.resultBoxSelector : standalone 시 진행 + 결과 둘 다 그릴 박스 (#collect-result)
+//   opts.label             : 시작 토스트 메시지 ("取得" vs "一括取得")
 async function runBackfillViaExtension(from, to, shopId, opts = {}) {
-  // opts.resultBoxSelector: 완료 시 결과 카드를 그릴 박스 (#collect-result 등)
-  // opts.label: 시작 토스트 메시지 변형 ("取得" vs "一括取得")
+  const standalone = !!opts.standalone;
   const cfg = await loadAuthConfig();
   const vercelUrl = window.location.origin;
   const jwt = sessionStorage.getItem("sb_access_token") || "";
   const taskId = "bf_" + Date.now();
-  $("#bf-progress").classList.remove("hidden");
-  $("#btn-backfill").disabled = true; $("#btn-refill").disabled = true;
-  $("#btn-backfill-cancel").style.display = "";
+  if (!standalone) {
+    $("#bf-progress").classList.remove("hidden");
+    $("#btn-backfill").disabled = true; $("#btn-refill").disabled = true;
+    $("#btn-backfill-cancel").style.display = "";
+  }
   toast(`${opts.label || '一括取得'}開始（ブラウザワーカー）— 進捗を確認できます。`, "ok");
   const startTs = Date.now();
   let lastProgress = { ok: 0, failed: 0, rows: 0, totals: {}, current: '', log: [], done: false };
-  // 매 초 시간만 새로 그림 (extension progress event 없는 사이에도)
+
+  const fmtTime = (sec) => {
+    sec = sec || 0;
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return (h ? `${h}時間` : "") + (m || h ? `${m}分` : "") + `${s}秒`;
+  };
+
   const tickTimer = setInterval(() => {
     if (lastProgress.done) { clearInterval(tickTimer); return; }
-    renderBackfillStatus(lastProgress, Math.floor((Date.now() - startTs) / 1000));
+    render(lastProgress, Math.floor((Date.now() - startTs) / 1000));
   }, 1000);
-  function renderBackfillStatus(info, elapsedOverride) {
-    const fmtTime = (sec) => {
-      sec = sec || 0;
-      const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
-      return (h ? `${h}時間` : "") + (m || h ? `${m}分` : "") + `${s}秒`;
-    };
+
+  function render(info, elapsedOverride) {
     const elapsed = elapsedOverride !== undefined ? elapsedOverride : (info.elapsed_seconds || 0);
-    // 진행 바
     const pct = info.progress_pct != null ? info.progress_pct
               : (info.total_count ? Math.floor((info.done_count || 0) / info.total_count * 100) : 0);
-    $("#bf-bar").style.width = pct + "%";
     const counter = info.total_count ? `${info.done_count || 0}/${info.total_count}` : `${info.ok || 0}成功`;
     const timeChip = `<span class="bf-time">⏱ 経過 <b>${fmtTime(elapsed)}</b></span>`;
-    $("#bf-status").innerHTML = `${info.done ? '完了' : '取得中 ' + escapeHtml(info.current || '')} · ${counter} · 成功 ${info.ok || 0} / 失敗 ${info.failed || 0} · 累計 ${fmt(info.rows || 0)}件 · ${timeChip}`;
     const totals = info.totals || {};
-    $("#bf-totals").innerHTML = Object.entries(totals)
-      .map(([k, v]) => `<span class="t">${k} <b>${fmt(v)}</b></span>`).join("");
-    $("#bf-log").innerHTML = (info.log || []).slice().reverse()
-      .map(l => `<div class="${l.includes('失敗') || l.includes('エラー') ? 'fail' : ''}">${escapeHtml(l)}</div>`).join("");
+
+    if (standalone) {
+      // 결과 박스에 진행 + 결과 자체 렌더 (백필 영역 건드리지 않음)
+      const rb = opts.resultBoxSelector ? document.querySelector(opts.resultBoxSelector) : null;
+      if (!rb) return;
+      if (info.done) {
+        if (info.error) {
+          rb.className = "result-box err";
+          rb.innerHTML = `<div class="cl-head"><span class="cl-ok" style="color:#bf0000">⚠ 取得失敗</span><span class="muted small">${escapeHtml(info.error)}</span></div>`;
+        } else {
+          rb.className = "result-box ok";
+          rb.innerHTML = `
+            <div class="cl-head"><span class="cl-ok">✅ 取得完了</span><span class="muted small">${escapeHtml(from)} 〜 ${escapeHtml(to)} ・ ⏱ ${fmtTime(elapsed)}</span></div>
+            <div class="cl-grid"><div class="cl-section"><div class="cl-sec-h">📦 取得結果</div><div class="cl-cards">
+              ${Object.entries(totals).map(([k,v]) => `<div class="cl-card"><div class="cl-l">${escapeHtml(k)}</div><div class="cl-v">${fmt(v)}</div></div>`).join("")}
+              <div class="cl-card"><div class="cl-l">累計</div><div class="cl-v">${fmt(info.rows || 0)}</div></div>
+            </div></div></div>
+          `;
+        }
+      } else {
+        rb.className = "result-box";
+        const totalsChips = Object.entries(totals).map(([k,v]) =>
+          `<span style="background:#fff;border:1px solid #e3e6ea;border-radius:14px;padding:2px 10px;font-size:11px;margin-right:4px">${escapeHtml(k)} <b>${fmt(v)}</b></span>`).join("");
+        rb.innerHTML = `
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <span class="spin"></span>
+            <b style="font-size:13px">取得中</b>
+            <span class="muted small">${escapeHtml(info.current || '')}</span>
+            <span style="margin-left:auto">${timeChip}</span>
+          </div>
+          <div style="background:#f0f2f5;border-radius:6px;overflow:hidden;height:6px;margin:6px 0 8px">
+            <div style="background:#bf0000;height:100%;width:${pct}%;transition:width .3s"></div>
+          </div>
+          <div class="muted small" style="margin-bottom:6px">${counter} · 成功 ${info.ok || 0} / 失敗 ${info.failed || 0} · 累計 ${fmt(info.rows || 0)}件</div>
+          ${totalsChips ? `<div style="margin-top:6px">${totalsChips}</div>` : ""}
+        `;
+      }
+    } else {
+      // 기존 백필 UI
+      $("#bf-bar").style.width = pct + "%";
+      $("#bf-status").innerHTML = `${info.done ? '完了' : '取得中 ' + escapeHtml(info.current || '')} · ${counter} · 成功 ${info.ok || 0} / 失敗 ${info.failed || 0} · 累計 ${fmt(info.rows || 0)}件 · ${timeChip}`;
+      $("#bf-totals").innerHTML = Object.entries(totals)
+        .map(([k, v]) => `<span class="t">${k} <b>${fmt(v)}</b></span>`).join("");
+      $("#bf-log").innerHTML = (info.log || []).slice().reverse()
+        .map(l => `<div class="${l.includes('失敗') || l.includes('エラー') ? 'fail' : ''}">${escapeHtml(l)}</div>`).join("");
+    }
   }
 
-  // 진행률 listener — 들어온 정보 캐시, 매초 tick은 위에서 처리
   ext_on('BACKFILL_PROGRESS', (info) => {
     if (info.taskId !== taskId) return;
     lastProgress = { ...lastProgress, ...info };
-    renderBackfillStatus(lastProgress, Math.floor((Date.now() - startTs) / 1000));
+    render(lastProgress, Math.floor((Date.now() - startTs) / 1000));
     if (info.done) {
-      $("#btn-backfill").disabled = false; $("#btn-refill").disabled = false;
-      $("#btn-backfill-cancel").style.display = "none";
+      if (!standalone) {
+        $("#btn-backfill").disabled = false; $("#btn-refill").disabled = false;
+        $("#btn-backfill-cancel").style.display = "none";
+      } else {
+        const cb = document.querySelector('#btn-collect');
+        if (cb) cb.disabled = false;
+      }
       if (info.error) toast("エラー: " + info.error, true);
       else toast(`完了 — ${fmt(info.rows || 0)}件 取得`, "ok");
       loadStatus(); loadCoverage();
-      // 결과 박스 (데이터 취득 등) 옵션 렌더
-      if (opts.resultBoxSelector) {
-        const rb = document.querySelector(opts.resultBoxSelector);
-        const cb = document.querySelector('#btn-collect');
-        if (cb) cb.disabled = false;
-        if (rb) {
-          if (info.error) {
-            rb.className = "result-box err";
-            rb.innerHTML = `<div class="cl-head"><span class="cl-ok" style="color:#bf0000">⚠ 取得失敗</span><span class="muted small">${escapeHtml(info.error)}</span></div>`;
-          } else {
-            const totals = info.totals || {};
-            const totalRows = info.rows || 0;
-            rb.className = "result-box ok";
-            rb.innerHTML = `
-              <div class="cl-head"><span class="cl-ok">✅ 取得完了</span><span class="muted small">${escapeHtml(from)} 〜 ${escapeHtml(to)}</span></div>
-              <div class="cl-grid"><div class="cl-section"><div class="cl-sec-h">📦 取得結果</div><div class="cl-cards">
-                ${Object.entries(totals).map(([k,v]) => `<div class="cl-card"><div class="cl-l">${escapeHtml(k)}</div><div class="cl-v">${fmt(v)}</div></div>`).join("")}
-                <div class="cl-card"><div class="cl-l">累計</div><div class="cl-v">${fmt(totalRows)}</div></div>
-              </div></div></div>
-            `;
-          }
-        }
-      }
     }
   });
 
@@ -765,8 +791,13 @@ async function runBackfillViaExtension(from, to, shopId, opts = {}) {
   });
   if (r?.error) {
     toast("拡張機能エラー: " + r.error, true);
-    $("#btn-backfill").disabled = false; $("#btn-refill").disabled = false;
-    $("#btn-backfill-cancel").style.display = "none";
+    if (!standalone) {
+      $("#btn-backfill").disabled = false; $("#btn-refill").disabled = false;
+      $("#btn-backfill-cancel").style.display = "none";
+    } else {
+      const cb = document.querySelector('#btn-collect');
+      if (cb) cb.disabled = false;
+    }
   }
 }
 async function pollBackfill() {
