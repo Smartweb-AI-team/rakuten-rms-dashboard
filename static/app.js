@@ -464,7 +464,8 @@ $("#btn-collect").onclick = async () => {
       if (!shopId) return toast("楽天 RMS にログインしていません — RMS広告ページを開いてから再実行してください", true);
       const box = $("#collect-result"); box.className = "result-box"; box.classList.remove("hidden");
       box.innerHTML = `<span class="spin"></span>ブラウザワーカーで取得中 (${from} 〜 ${to})…<br><span class="muted small">下の進捗バーで状態を確認できます</span>`;
-      return runBackfillViaExtension(from, to, shopId);
+      $("#btn-collect").disabled = true;
+      return runBackfillViaExtension(from, to, shopId, { resultBoxSelector: '#collect-result', label: '取得' });
     }
   }
 
@@ -662,7 +663,9 @@ $("#btn-backfill").onclick = async () => {
 $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/cancel", {}); toast("キャンセルを要求しました"); };
 
 // 확장 워커로 백필 실행 (브라우저 = 본인 楽天 세션 직접 사용)
-async function runBackfillViaExtension(from, to, shopId) {
+async function runBackfillViaExtension(from, to, shopId, opts = {}) {
+  // opts.resultBoxSelector: 완료 시 결과 카드를 그릴 박스 (#collect-result 등)
+  // opts.label: 시작 토스트 메시지 변형 ("取得" vs "一括取得")
   const cfg = await loadAuthConfig();
   const vercelUrl = window.location.origin;
   const jwt = sessionStorage.getItem("sb_access_token") || "";
@@ -670,7 +673,7 @@ async function runBackfillViaExtension(from, to, shopId) {
   $("#bf-progress").classList.remove("hidden");
   $("#btn-backfill").disabled = true; $("#btn-refill").disabled = true;
   $("#btn-backfill-cancel").style.display = "";
-  toast(`取得開始（ブラウザワーカー）— 進捗を確認できます。`, "ok");
+  toast(`${opts.label || '一括取得'}開始（ブラウザワーカー）— 進捗を確認できます。`, "ok");
   const startTs = Date.now();
   let lastProgress = { ok: 0, failed: 0, rows: 0, totals: {}, current: '', log: [], done: false };
   // 매 초 시간만 새로 그림 (extension progress event 없는 사이에도)
@@ -710,6 +713,29 @@ async function runBackfillViaExtension(from, to, shopId) {
       if (info.error) toast("エラー: " + info.error, true);
       else toast(`完了 — ${fmt(info.rows || 0)}件 取得`, "ok");
       loadStatus(); loadCoverage();
+      // 결과 박스 (데이터 취득 등) 옵션 렌더
+      if (opts.resultBoxSelector) {
+        const rb = document.querySelector(opts.resultBoxSelector);
+        const cb = document.querySelector('#btn-collect');
+        if (cb) cb.disabled = false;
+        if (rb) {
+          if (info.error) {
+            rb.className = "result-box err";
+            rb.innerHTML = `<div class="cl-head"><span class="cl-ok" style="color:#bf0000">⚠ 取得失敗</span><span class="muted small">${escapeHtml(info.error)}</span></div>`;
+          } else {
+            const totals = info.totals || {};
+            const totalRows = info.rows || 0;
+            rb.className = "result-box ok";
+            rb.innerHTML = `
+              <div class="cl-head"><span class="cl-ok">✅ 取得完了</span><span class="muted small">${escapeHtml(from)} 〜 ${escapeHtml(to)}</span></div>
+              <div class="cl-grid"><div class="cl-section"><div class="cl-sec-h">📦 取得結果</div><div class="cl-cards">
+                ${Object.entries(totals).map(([k,v]) => `<div class="cl-card"><div class="cl-l">${escapeHtml(k)}</div><div class="cl-v">${fmt(v)}</div></div>`).join("")}
+                <div class="cl-card"><div class="cl-l">累計</div><div class="cl-v">${fmt(totalRows)}</div></div>
+              </div></div></div>
+            `;
+          }
+        }
+      }
     }
   });
 
