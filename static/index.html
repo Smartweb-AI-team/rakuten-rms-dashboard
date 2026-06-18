@@ -6,6 +6,7 @@
 <meta name="rakuten-rms-dashboard" content="1">
 <title>広告ダッシュボード · 楽天RMS</title>
 <link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/feedback.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
 </head>
 <body>
@@ -27,6 +28,7 @@
       <button class="nav-item" data-view="report"><span>📄</span> レポート</button>
       <div class="nav-group-label">管理</div>
       <button class="nav-item" data-view="collect"><span>📥</span> データ取得</button>
+      <button class="nav-item" data-view="feedback"><span>💬</span> お問い合わせ</button>
     </nav>
     <div class="sidebar-foot">
       <button id="btn-settings" class="ghost-btn">⚙️ 設定</button>
@@ -325,7 +327,79 @@
       <div class="card" id="report-body"></div>
     </section>
 
+    <!-- ============ お問い合わせ / Q&A 게시판 ============ -->
+    <section class="view hidden" id="view-feedback">
+      <div class="fb-wrap">
+        <!-- 헤더: 검색 + 필터 + 새 글 -->
+        <div class="fb-head">
+          <div class="fb-search">
+            <span class="fb-search-ico">🔍</span>
+            <input id="fb-search" type="text" placeholder="検索 (タイトル・本文)" />
+          </div>
+          <div class="fb-filters" id="fb-filters">
+            <button class="fb-chip active" data-cat="all">すべて</button>
+            <button class="fb-chip" data-cat="question">❓ 質問</button>
+            <button class="fb-chip" data-cat="bug">🐛 バグ</button>
+            <button class="fb-chip" data-cat="feature">✨ 機能要望</button>
+            <button class="fb-chip" data-cat="other">📝 その他</button>
+          </div>
+          <button id="fb-btn-new" class="fb-btn-primary">＋ 新規投稿</button>
+        </div>
+
+        <!-- 본문: 좌 목록 + 우 상세 -->
+        <div class="fb-body">
+          <div class="fb-list" id="fb-list">
+            <div class="fb-empty">読み込み中…</div>
+          </div>
+          <div class="fb-detail" id="fb-detail">
+            <div class="fb-empty">投稿を選択してください</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
   </main>
+</div>
+
+<!-- 新規投稿モーダル -->
+<div class="fb-modal hidden" id="fb-modal">
+  <div class="fb-modal-card">
+    <div class="fb-modal-head">
+      <h2 id="fb-modal-title">新規投稿</h2>
+      <button class="fb-modal-x" id="fb-modal-close">✕</button>
+    </div>
+    <div class="fb-modal-body">
+      <div class="fb-field">
+        <label>カテゴリ</label>
+        <div class="fb-cat-picker" id="fb-cat-picker">
+          <button class="fb-cat-btn active" data-v="question">❓ 質問</button>
+          <button class="fb-cat-btn" data-v="bug">🐛 バグ報告</button>
+          <button class="fb-cat-btn" data-v="feature">✨ 機能要望</button>
+          <button class="fb-cat-btn" data-v="other">📝 その他</button>
+        </div>
+      </div>
+      <div class="fb-field">
+        <label>タイトル</label>
+        <input id="fb-title" type="text" maxlength="120" placeholder="短く要点を" />
+      </div>
+      <div class="fb-field">
+        <label>内容</label>
+        <textarea id="fb-body" rows="8" placeholder="詳細を記入 (再現手順・スクショ etc.)"></textarea>
+      </div>
+      <div class="fb-field">
+        <label>添付ファイル (画像)</label>
+        <div class="fb-drop" id="fb-drop">
+          <span class="fb-drop-text">📎 画像をドラッグ&ドロップ または <u>クリックして選択</u></span>
+          <input type="file" id="fb-file" accept="image/*" multiple hidden />
+        </div>
+        <div class="fb-attachments" id="fb-attachments"></div>
+      </div>
+    </div>
+    <div class="fb-modal-foot">
+      <button class="fb-btn-ghost" id="fb-cancel">キャンセル</button>
+      <button class="fb-btn-primary" id="fb-submit">投稿する</button>
+    </div>
+  </div>
 </div>
 
 <!-- 設定モーダル -->

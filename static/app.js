@@ -359,7 +359,7 @@ function renderPicker() {
 window.addEventListener("resize", closePicker);
 
 let STATUS = {};
-const VIEW_TITLES = { collect: "データ取得", dashboard: "ダッシュボード", analysis: "商品ｘキーワード", product: "商品ｘキーワード", matrix: "商品ｘキーワード", compare: "商品ｘキーワード", report: "レポート" };
+const VIEW_TITLES = { collect: "データ取得", dashboard: "ダッシュボード", analysis: "商品ｘキーワード", product: "商品ｘキーワード", matrix: "商品ｘキーワード", compare: "商品ｘキーワード", report: "レポート", feedback: "お問い合わせ" };
 
 function toast(msg, kind) {
   const t = $("#toast");
@@ -387,6 +387,437 @@ function switchView(v) {
   if (v === "dashboard") loadDashboard();
   if (v === "analysis") loadAnalysisView();
   if (v === "report") loadReportView();
+  if (v === "feedback") loadFeedbackView();
+}
+
+/* ==================== お問い合わせ / Q&A 게시판 ==================== */
+const FB_CAT_META = {
+  question: { label: "質問",     icon: "❓", color: "#1d4ed8" },
+  bug:      { label: "バグ",     icon: "🐛", color: "#bf0000" },
+  feature:  { label: "機能要望", icon: "✨", color: "#7c3aed" },
+  other:    { label: "その他",   icon: "📝", color: "#64748b" },
+};
+const FB_STATUS_META = {
+  open:      { label: "未対応", color: "#f59e0b", bg: "#fef3c7" },
+  answered:  { label: "回答済", color: "#0c7a3e", bg: "#dcfce7" },
+  resolved:  { label: "解決済", color: "#5a6173", bg: "#e5e7eb" },
+  wont_fix:  { label: "対象外", color: "#94a3b8", bg: "#f1f5f9" },
+};
+let FB_STATE = {
+  category: "all",
+  query: "",
+  posts: [],
+  selectedId: null,
+  attachments: [],  // 모달 첨부 파일 (File 객체 + uploaded path)
+  modalEditId: null,
+};
+let FB_INIT = false;
+
+async function _sbFetch(path, opts = {}) {
+  const cfg = await loadAuthConfig();
+  const tok = sessionStorage.getItem("sb_access_token");
+  const headers = {
+    "apikey": cfg.supabase_anon_key,
+    "Authorization": "Bearer " + tok,
+    "Content-Type": "application/json",
+    ...(opts.headers || {}),
+  };
+  return fetch(`${cfg.supabase_url}/rest/v1/${path}`, { ...opts, headers });
+}
+async function _sbStorageUpload(file) {
+  const cfg = await loadAuthConfig();
+  const tok = sessionStorage.getItem("sb_access_token");
+  const ext = (file.name.split(".").pop() || "png").toLowerCase();
+  const ts = String(Date.now()).slice(-9);
+  const rand = Math.random().toString(36).slice(2, 8);
+  const path = `${ts}_${rand}.${ext}`;
+  const r = await fetch(
+    `${cfg.supabase_url}/storage/v1/object/feedback-attachments/${path}`,
+    { method: "POST", headers: { "Authorization": "Bearer " + tok, "Content-Type": file.type || "application/octet-stream" }, body: file });
+  if (!r.ok) throw new Error(`storage upload ${r.status}`);
+  return path;
+}
+function _sbPublicUrl(path) {
+  // loadAuthConfig 는 cached 라 동기 접근 가능
+  return `${AUTH_CFG.supabase_url}/storage/v1/object/public/feedback-attachments/${path}`;
+}
+
+function _fbCurrentUser() {
+  // JWT payload 디코드 (email 추출용)
+  const tok = sessionStorage.getItem("sb_access_token");
+  if (!tok) return null;
+  try {
+    const payload = JSON.parse(atob(tok.split(".")[1]));
+    return { id: payload.sub, email: payload.email || "" };
+  } catch { return null; }
+}
+
+function _fbRelTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return "今";
+  if (diff < 3600) return Math.floor(diff / 60) + "分前";
+  if (diff < 86400) return Math.floor(diff / 3600) + "時間前";
+  if (diff < 604800) return Math.floor(diff / 86400) + "日前";
+  return d.toLocaleDateString("ja-JP");
+}
+
+async function loadFeedbackView() {
+  if (!FB_INIT) {
+    _fbBindEvents();
+    FB_INIT = true;
+  }
+  await _fbReloadList();
+}
+
+async function _fbReloadList() {
+  const list = document.getElementById("fb-list");
+  list.innerHTML = `<div class="fb-empty">読み込み中…</div>`;
+  try {
+    const r = await _sbFetch(
+      "feedback_posts?select=*,feedback_replies(id)&order=created_at.desc&limit=200");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    FB_STATE.posts = await r.json();
+    _fbRenderList();
+  } catch (e) {
+    list.innerHTML = `<div class="fb-empty">読み込み失敗: ${escapeHtml(String(e.message || e))}</div>`;
+  }
+}
+
+function _fbRenderList() {
+  const list = document.getElementById("fb-list");
+  const q = (FB_STATE.query || "").toLowerCase();
+  const filtered = FB_STATE.posts.filter(p => {
+    if (FB_STATE.category !== "all" && p.category !== FB_STATE.category) return false;
+    if (q && !(p.title.toLowerCase().includes(q) || (p.body || "").toLowerCase().includes(q))) return false;
+    return true;
+  });
+  if (!filtered.length) {
+    list.innerHTML = `<div class="fb-empty">投稿がありません</div>`;
+    return;
+  }
+  list.innerHTML = filtered.map(p => {
+    const cat = FB_CAT_META[p.category] || FB_CAT_META.other;
+    const st = FB_STATUS_META[p.status] || FB_STATUS_META.open;
+    const repCount = (p.feedback_replies || []).length;
+    const isSel = FB_STATE.selectedId === p.id;
+    const author = (p.user_email || "—").split("@")[0];
+    return `
+      <div class="fb-card${isSel ? ' fb-card-sel' : ''}" data-id="${p.id}">
+        <div class="fb-card-top">
+          <span class="fb-cat-pill" style="background:${cat.color}15;color:${cat.color}">${cat.icon} ${cat.label}</span>
+          <span class="fb-st-pill" style="background:${st.bg};color:${st.color}">${st.label}</span>
+        </div>
+        <div class="fb-card-title">${escapeHtml(p.title)}</div>
+        <div class="fb-card-meta">
+          <span>${escapeHtml(author)}</span>
+          <span>·</span>
+          <span>${_fbRelTime(p.created_at)}</span>
+          ${repCount ? `<span class="fb-rep-badge">💬 ${repCount}</span>` : ""}
+        </div>
+      </div>
+    `;
+  }).join("");
+  list.querySelectorAll(".fb-card").forEach(el => {
+    el.onclick = () => _fbSelectPost(parseInt(el.dataset.id));
+  });
+  if (FB_STATE.selectedId) {
+    const post = FB_STATE.posts.find(p => p.id === FB_STATE.selectedId);
+    if (!post) FB_STATE.selectedId = null;
+  }
+}
+
+async function _fbSelectPost(id) {
+  FB_STATE.selectedId = id;
+  _fbRenderList();
+  const detail = document.getElementById("fb-detail");
+  detail.innerHTML = `<div class="fb-empty">読み込み中…</div>`;
+  try {
+    const [rPost, rReplies] = await Promise.all([
+      _sbFetch(`feedback_posts?id=eq.${id}&select=*`),
+      _sbFetch(`feedback_replies?post_id=eq.${id}&select=*&order=created_at.asc`),
+    ]);
+    const post = (await rPost.json())[0];
+    const replies = await rReplies.json();
+    if (!post) { detail.innerHTML = `<div class="fb-empty">見つかりません</div>`; return; }
+    _fbRenderDetail(post, replies);
+  } catch (e) {
+    detail.innerHTML = `<div class="fb-empty">読み込み失敗</div>`;
+  }
+}
+
+function _fbRenderDetail(post, replies) {
+  const detail = document.getElementById("fb-detail");
+  const cat = FB_CAT_META[post.category] || FB_CAT_META.other;
+  const st = FB_STATUS_META[post.status] || FB_STATUS_META.open;
+  const me = _fbCurrentUser();
+  const isOwn = me && me.id === post.user_id;
+  const author = (post.user_email || "—").split("@")[0];
+  const attHTML = (post.attachment_paths || []).map(p =>
+    `<a href="${_sbPublicUrl(p)}" target="_blank" class="fb-att-img"><img src="${_sbPublicUrl(p)}" loading="lazy"></a>`).join("");
+  const repliesHTML = replies.map(r => {
+    const rIsOwn = me && me.id === r.user_id;
+    const rAuthor = (r.user_email || "—").split("@")[0];
+    const rAtt = (r.attachment_paths || []).map(p =>
+      `<a href="${_sbPublicUrl(p)}" target="_blank" class="fb-att-img"><img src="${_sbPublicUrl(p)}" loading="lazy"></a>`).join("");
+    return `
+      <div class="fb-reply${rIsOwn ? ' fb-reply-own' : ''}">
+        <div class="fb-reply-head">
+          <span class="fb-avatar">${escapeHtml(rAuthor.slice(0,2).toUpperCase())}</span>
+          <span class="fb-reply-author">${escapeHtml(rAuthor)}</span>
+          <span class="fb-reply-time">${_fbRelTime(r.created_at)}</span>
+          ${rIsOwn ? `<button class="fb-reply-del" data-rid="${r.id}" title="削除">✕</button>` : ""}
+        </div>
+        <div class="fb-reply-body">${escapeHtml(r.body).replace(/\n/g, "<br>")}</div>
+        ${rAtt ? `<div class="fb-att-grid">${rAtt}</div>` : ""}
+      </div>
+    `;
+  }).join("");
+
+  detail.innerHTML = `
+    <div class="fb-detail-head">
+      <div class="fb-detail-tags">
+        <span class="fb-cat-pill" style="background:${cat.color}15;color:${cat.color}">${cat.icon} ${cat.label}</span>
+        <span class="fb-st-pill" style="background:${st.bg};color:${st.color}">${st.label}</span>
+      </div>
+      <h1 class="fb-detail-title">${escapeHtml(post.title)}</h1>
+      <div class="fb-detail-meta">
+        <span class="fb-avatar">${escapeHtml(author.slice(0,2).toUpperCase())}</span>
+        <span>${escapeHtml(author)}</span>
+        <span>·</span>
+        <span>${_fbRelTime(post.created_at)}</span>
+        ${isOwn ? `
+          <span style="margin-left:auto;display:flex;gap:6px">
+            <button class="fb-status-btn" id="fb-status-toggle">状態 ${st.label}</button>
+            <button class="fb-btn-ghost-sm" id="fb-edit-post">編集</button>
+            <button class="fb-btn-ghost-sm fb-danger" id="fb-delete-post">削除</button>
+          </span>` : ""}
+      </div>
+    </div>
+    <div class="fb-detail-body">${escapeHtml(post.body).replace(/\n/g, "<br>")}</div>
+    ${attHTML ? `<div class="fb-att-grid">${attHTML}</div>` : ""}
+    <div class="fb-replies-sec">
+      <h3 class="fb-replies-h">💬 返信 (${replies.length})</h3>
+      <div class="fb-replies-list">${repliesHTML || '<div class="fb-empty fb-empty-sm">まだ返信がありません</div>'}</div>
+      <div class="fb-reply-form">
+        <textarea id="fb-reply-body" rows="3" placeholder="返信を書く…"></textarea>
+        <div class="fb-reply-form-foot">
+          <input type="file" id="fb-reply-file" accept="image/*" multiple hidden />
+          <button class="fb-btn-ghost-sm" id="fb-reply-attach">📎 添付</button>
+          <span class="fb-reply-att-info" id="fb-reply-att-info"></span>
+          <button class="fb-btn-primary fb-btn-sm" id="fb-reply-send">返信</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // 답글 폼 핸들러
+  const replyAttachments = [];
+  document.getElementById("fb-reply-attach").onclick = () =>
+    document.getElementById("fb-reply-file").click();
+  document.getElementById("fb-reply-file").onchange = async (e) => {
+    const info = document.getElementById("fb-reply-att-info");
+    for (const f of e.target.files) {
+      info.textContent = "アップロード中…";
+      try {
+        const path = await _sbStorageUpload(f);
+        replyAttachments.push(path);
+      } catch (err) { toast("添付失敗: " + err.message, true); }
+    }
+    info.textContent = `添付 ${replyAttachments.length}件`;
+    e.target.value = "";
+  };
+  document.getElementById("fb-reply-send").onclick = async () => {
+    const body = document.getElementById("fb-reply-body").value.trim();
+    if (!body) return toast("内容を入力してください", true);
+    const me = _fbCurrentUser();
+    try {
+      const r = await _sbFetch("feedback_replies", {
+        method: "POST",
+        headers: { "Prefer": "return=minimal" },
+        body: JSON.stringify({
+          post_id: post.id, body, user_email: me?.email,
+          attachment_paths: replyAttachments,
+        }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      // 상태 자동 "answered" (글쓴이가 아닌 사람이 답글 단 경우)
+      if (post.status === "open" && me?.id !== post.user_id) {
+        await _sbFetch(`feedback_posts?id=eq.${post.id}`, {
+          method: "PATCH",
+          headers: { "Prefer": "return=minimal" },
+          body: JSON.stringify({ status: "answered" }),
+        }).catch(() => {});
+      }
+      toast("返信しました", "ok");
+      await _fbReloadList();
+      _fbSelectPost(post.id);
+    } catch (e) { toast("返信失敗: " + e.message, true); }
+  };
+
+  // 본인 글: 삭제 / 편집 / 상태 변경
+  if (isOwn) {
+    document.getElementById("fb-delete-post").onclick = async () => {
+      if (!confirm("この投稿を削除しますか？")) return;
+      try {
+        const r = await _sbFetch(`feedback_posts?id=eq.${post.id}`, { method: "DELETE", headers: { "Prefer": "return=minimal" } });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        FB_STATE.selectedId = null;
+        document.getElementById("fb-detail").innerHTML = `<div class="fb-empty">投稿を選択してください</div>`;
+        await _fbReloadList();
+        toast("削除しました", "ok");
+      } catch (e) { toast("削除失敗: " + e.message, true); }
+    };
+    document.getElementById("fb-edit-post").onclick = () => _fbOpenModal(post);
+    document.getElementById("fb-status-toggle").onclick = async () => {
+      const next = { open: "answered", answered: "resolved", resolved: "wont_fix", wont_fix: "open" }[post.status] || "open";
+      try {
+        await _sbFetch(`feedback_posts?id=eq.${post.id}`, {
+          method: "PATCH",
+          headers: { "Prefer": "return=minimal" },
+          body: JSON.stringify({ status: next }),
+        });
+        await _fbReloadList();
+        _fbSelectPost(post.id);
+      } catch (e) { toast("状態変更失敗: " + e.message, true); }
+    };
+  }
+
+  // 답글 삭제
+  detail.querySelectorAll(".fb-reply-del").forEach(b => {
+    b.onclick = async () => {
+      if (!confirm("この返信を削除しますか？")) return;
+      try {
+        await _sbFetch(`feedback_replies?id=eq.${b.dataset.rid}`, { method: "DELETE", headers: { "Prefer": "return=minimal" } });
+        _fbSelectPost(post.id);
+      } catch (e) { toast("削除失敗", true); }
+    };
+  });
+}
+
+function _fbBindEvents() {
+  document.getElementById("fb-search").oninput = (e) => {
+    FB_STATE.query = e.target.value;
+    _fbRenderList();
+  };
+  document.getElementById("fb-filters").querySelectorAll(".fb-chip").forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll("#fb-filters .fb-chip").forEach(x => x.classList.remove("active"));
+      b.classList.add("active");
+      FB_STATE.category = b.dataset.cat;
+      _fbRenderList();
+    };
+  });
+  document.getElementById("fb-btn-new").onclick = () => _fbOpenModal(null);
+  document.getElementById("fb-modal-close").onclick = _fbCloseModal;
+  document.getElementById("fb-cancel").onclick = _fbCloseModal;
+  document.getElementById("fb-modal").onclick = (e) => {
+    if (e.target.id === "fb-modal") _fbCloseModal();
+  };
+  document.getElementById("fb-cat-picker").querySelectorAll(".fb-cat-btn").forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll("#fb-cat-picker .fb-cat-btn").forEach(x => x.classList.remove("active"));
+      b.classList.add("active");
+    };
+  });
+  const drop = document.getElementById("fb-drop");
+  const fileInput = document.getElementById("fb-file");
+  drop.onclick = () => fileInput.click();
+  fileInput.onchange = (e) => _fbHandleFiles(e.target.files);
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("fb-drop-over"); };
+  drop.ondragleave = () => drop.classList.remove("fb-drop-over");
+  drop.ondrop = (e) => {
+    e.preventDefault();
+    drop.classList.remove("fb-drop-over");
+    _fbHandleFiles(e.dataTransfer.files);
+  };
+  document.getElementById("fb-submit").onclick = _fbSubmitPost;
+}
+
+async function _fbHandleFiles(files) {
+  const list = document.getElementById("fb-attachments");
+  for (const f of files) {
+    if (!f.type.startsWith("image/")) continue;
+    const item = { file: f, path: null, status: "uploading" };
+    FB_STATE.attachments.push(item);
+    _fbRenderAttachments();
+    try {
+      item.path = await _sbStorageUpload(f);
+      item.status = "done";
+    } catch (e) {
+      item.status = "fail";
+      toast("アップロード失敗: " + e.message, true);
+    }
+    _fbRenderAttachments();
+  }
+}
+function _fbRenderAttachments() {
+  const wrap = document.getElementById("fb-attachments");
+  wrap.innerHTML = FB_STATE.attachments.map((a, i) => `
+    <div class="fb-att-chip">
+      ${a.status === "uploading" ? '<span class="spin"></span>' :
+        a.status === "fail" ? '<span style="color:#bf0000">⚠</span>' :
+        `<img src="${_sbPublicUrl(a.path)}" loading="lazy">`}
+      <span>${escapeHtml(a.file.name)}</span>
+      <button data-i="${i}" class="fb-att-x">✕</button>
+    </div>
+  `).join("");
+  wrap.querySelectorAll(".fb-att-x").forEach(b => {
+    b.onclick = () => {
+      FB_STATE.attachments.splice(parseInt(b.dataset.i), 1);
+      _fbRenderAttachments();
+    };
+  });
+}
+
+function _fbOpenModal(post) {
+  FB_STATE.modalEditId = post ? post.id : null;
+  FB_STATE.attachments = post ? (post.attachment_paths || []).map(p => ({ file: { name: p.split("/").pop() }, path: p, status: "done" })) : [];
+  document.getElementById("fb-modal-title").textContent = post ? "投稿を編集" : "新規投稿";
+  document.getElementById("fb-title").value = post ? post.title : "";
+  document.getElementById("fb-body").value = post ? post.body : "";
+  document.querySelectorAll("#fb-cat-picker .fb-cat-btn").forEach(b =>
+    b.classList.toggle("active", b.dataset.v === (post ? post.category : "question")));
+  _fbRenderAttachments();
+  document.getElementById("fb-modal").classList.remove("hidden");
+}
+function _fbCloseModal() {
+  document.getElementById("fb-modal").classList.add("hidden");
+  FB_STATE.attachments = [];
+  FB_STATE.modalEditId = null;
+}
+
+async function _fbSubmitPost() {
+  const title = document.getElementById("fb-title").value.trim();
+  const body = document.getElementById("fb-body").value.trim();
+  const cat = document.querySelector("#fb-cat-picker .fb-cat-btn.active")?.dataset.v || "question";
+  if (!title) return toast("タイトルを入力してください", true);
+  if (!body) return toast("内容を入力してください", true);
+  const me = _fbCurrentUser();
+  if (!me) return toast("ログインしてください", true);
+  const attachment_paths = FB_STATE.attachments.filter(a => a.status === "done").map(a => a.path);
+  try {
+    if (FB_STATE.modalEditId) {
+      const r = await _sbFetch(`feedback_posts?id=eq.${FB_STATE.modalEditId}`, {
+        method: "PATCH",
+        headers: { "Prefer": "return=minimal" },
+        body: JSON.stringify({ title, body, category: cat, attachment_paths }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      toast("更新しました", "ok");
+    } else {
+      const r = await _sbFetch("feedback_posts", {
+        method: "POST",
+        headers: { "Prefer": "return=minimal" },
+        body: JSON.stringify({ title, body, category: cat, user_email: me.email, attachment_paths }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      toast("投稿しました", "ok");
+    }
+    _fbCloseModal();
+    await _fbReloadList();
+  } catch (e) { toast("失敗: " + e.message, true); }
 }
 let analysisSub = "board", analysisInit = false;
 function loadAnalysisView() {
