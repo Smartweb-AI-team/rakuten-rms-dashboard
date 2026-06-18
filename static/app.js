@@ -1898,19 +1898,28 @@ async function loadCmpTargets() {
     const q = (fr, to) => `from=${fr}&to=${to}&product=${f.product}&selection_type=${scope}&window=${win}&segment=${seg}&limit=4000`;
     const [da, db] = await Promise.all([api.get("/api/data?" + q(f.aFrom, f.aTo)), api.get("/api/data?" + q(f.bFrom, f.bTo))]);
     const m = {};
-    // 商品×キーワード STEP2: 선택한 상품(item_url)에 매칭된 키워드만 필터
+    // 商品×キーワード STEP2: 선택한 상품에 매칭된 키워드만 필터.
+    // STEP1 (scope=3) 의 키는 item_url (URL 전체) — 그래야 STEP2 의 키워드 row.item_url 와 매칭됨.
+    // (sel=3 CSV 의 dimension_key 는 item_no 이므로 그걸 그대로 키로 쓰면 매칭 X)
     const filterFn = (f.scope === "3+4" && cmpItemForKW && scope === "4")
       ? r => r.item_url === cmpItemForKW
       : null;
+    const isProductScope = (scope === "3");
     const add = (rows, side) => rows.forEach(r => {
       if (filterFn && !filterFn(r)) return;
-      const k = r.dimension_key || r.campaign_name || ""; if (!k) return;
-      m[k] = m[k] || { dim: k, a: { ad_cost: 0, gms: 0, clicks: 0, cv: 0 }, b: { ad_cost: 0, gms: 0, clicks: 0, cv: 0 } };
+      // 상품 scope 에서는 매칭 키를 item_url 로 일관화. 라벨은 dimension_key (= item_no) 유지.
+      const k = isProductScope
+        ? (r.item_url || r.dimension_key || "")
+        : (r.dimension_key || r.campaign_name || "");
+      if (!k) return;
+      const label = isProductScope ? (r.dimension_key || r.item_url || "") : k;
+      m[k] = m[k] || { dim: k, label, a: { ad_cost: 0, gms: 0, clicks: 0, cv: 0 }, b: { ad_cost: 0, gms: 0, clicks: 0, cv: 0 } };
       ["ad_cost", "gms", "clicks", "cv"].forEach(c => m[k][side][c] += r[c] || 0);
     });
     add(da.rows, "a"); add(db.rows, "b");
     cmpTargets = Object.values(m).map(r => ({
       dim: r.dim,
+      label: r.label || r.dim,
       a_cost: r.a.ad_cost, b_cost: r.b.ad_cost, total_cost: r.a.ad_cost + r.b.ad_cost,
       a_gms: r.a.gms, b_gms: r.b.gms,
       a_roas: r.a.ad_cost ? r.a.gms / r.a.ad_cost : null, b_roas: r.b.ad_cost ? r.b.gms / r.b.ad_cost : null,
@@ -1943,15 +1952,19 @@ function renderCmpPicker() {
   if (cap) cap.innerHTML = total ? `2期間で広告掲載があった${kindL} <b>${total}件</b>${total > 200 ? "（上位200件を表示）" : "（全件）"}` : "";
   if (!rows.length) { t.innerHTML = `<tr><td>${cmpQ ? "検索結果なし" : "対象データがありません"}</td></tr>`; return; }
   t.innerHTML = `<thead><tr><th class="col-l">項目</th><th>広告費A</th><th>広告費B</th><th>ROAS A</th><th>ROAS B</th></tr></thead><tbody>` +
-    rows.map(r => `<tr class="row-click${cmpTarget === r.dim ? " row-sel" : ""}" data-dim="${r.dim.replace(/"/g, "&quot;")}">` +
-      `<td class="col-l dim-cell" title="${r.dim.replace(/"/g, "")}">${cmpTarget === r.dim ? "✓ " : ""}${trunc(r.dim, 46)}</td>` +
-      `<td>${fmtMoney(r.a_cost)}</td><td>${fmtMoney(r.b_cost)}</td><td>${fmtRoas(r.a_roas)}</td><td>${fmtRoas(r.b_roas)}</td></tr>`).join("") + "</tbody>";
+    rows.map(r => {
+      const labelText = r.label || r.dim;
+      return `<tr class="row-click${cmpTarget === r.dim ? " row-sel" : ""}" data-dim="${r.dim.replace(/"/g, "&quot;")}" data-label="${labelText.replace(/"/g, "&quot;")}">` +
+      `<td class="col-l dim-cell" title="${labelText.replace(/"/g, "")}">${cmpTarget === r.dim ? "✓ " : ""}${trunc(labelText, 46)}</td>` +
+      `<td>${fmtMoney(r.a_cost)}</td><td>${fmtMoney(r.b_cost)}</td><td>${fmtRoas(r.a_roas)}</td><td>${fmtRoas(r.b_roas)}</td></tr>`;
+    }).join("") + "</tbody>";
   $$("#cmp-picker tbody tr").forEach(tr => tr.onclick = () => {
     const f = readFilters("#cmp-filters");
     if (f.scope === "3+4" && !cmpItemForKW) {
-      // STEP1 완료 → STEP2 진입
+      // STEP1 완료 → STEP2 진입. dataset.dim 은 매칭 키 (item_url), dataset.label 은 표시용 (item_no).
       cmpItemForKW = tr.dataset.dim;
-      $("#cmp-picker-title").innerHTML = `STEP2: 「${trunc(cmpItemForKW, 40)}」のキーワードを選択 <button class="ghost-btn small" id="cmp-back-step1" style="margin-left:10px">← 商品選択へ戻る</button>`;
+      const labelText = tr.dataset.label || cmpItemForKW;
+      $("#cmp-picker-title").innerHTML = `STEP2: 「${trunc(labelText, 40)}」のキーワードを選択 <button class="ghost-btn small" id="cmp-back-step1" style="margin-left:10px">← 商品選択へ戻る</button>`;
       $("#cmp-back-step1")?.addEventListener("click", () => { cmpItemForKW = null; cmpTarget = null; onScopeChange(); });
       cmpQ = ""; if ($("#cmp-search")) $("#cmp-search").value = "";
       loadCmpTargets();

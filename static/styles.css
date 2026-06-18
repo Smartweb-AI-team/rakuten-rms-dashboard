@@ -758,16 +758,16 @@ html{scroll-padding-top:96px;scroll-behavior:smooth}
 .ml-watch{color:#5a6173}
 
 /* 成長率ランキング — 일반(table) */
-.growth-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:8px}
-.growth-grid:has(.growth-col:nth-child(3)){grid-template-columns:1fr 1fr 1fr}
-@media(max-width:1100px){.growth-grid,.growth-grid:has(.growth-col:nth-child(3)){grid-template-columns:1fr}}
+.growth-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:8px}
 .growth-col{background:#fff;border:1px solid var(--line-mid);border-radius:10px;padding:10px 12px;min-width:0}
 .growth-h{font-size:12px;font-weight:800;letter-spacing:.04em;padding:5px 10px;border-radius:6px;margin-bottom:8px;display:inline-block}
 .growth-h-up{background:var(--good-soft);color:var(--good-ink)}
 .growth-h-down{background:var(--bad-soft);color:var(--bad-ink)}
 .growth-h-new{background:var(--warn-soft);color:var(--warn-ink)}
 .growth-col .growth-tbl{margin:0;font-size:11.5px;table-layout:fixed;width:100%}
-.growth-col .growth-tbl th,.growth-col .growth-tbl td{padding:6px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.growth-col .growth-tbl th,.growth-col .growth-tbl td{padding:6px 8px;overflow:hidden;text-overflow:ellipsis;word-break:break-all}
+.growth-col .growth-tbl th{white-space:nowrap}
+.growth-col .growth-tbl td.col-l{white-space:normal;line-height:1.35}
 .growth-col .growth-tbl th:nth-child(1),.growth-col .growth-tbl td:nth-child(1){width:38%}
 .growth-col .growth-tbl th:nth-child(2),.growth-col .growth-tbl td:nth-child(2){width:24%;text-align:right}
 .growth-col .growth-tbl th:nth-child(3),.growth-col .growth-tbl td:nth-child(3){width:18%;text-align:right;color:var(--ink-soft)}
