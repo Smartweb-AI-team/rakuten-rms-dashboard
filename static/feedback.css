@@ -75,6 +75,59 @@
 .fb-lb-prev:hover,.fb-lb-next:hover{transform:translateY(-50%) scale(1.08)}
 .fb-lb-counter{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.5);color:#fff;padding:6px 14px;border-radius:14px;font-size:12px;font-weight:600;letter-spacing:.5px;backdrop-filter:blur(8px)}
 
+/* 링크 자동감지 */
+.fb-link{color:#1d4ed8;text-decoration:none;border-bottom:1px solid rgba(29,78,216,.3);transition:.15s;word-break:break-all}
+.fb-link:hover{border-bottom-color:#1d4ed8;background:rgba(29,78,216,.05);border-radius:3px;padding:1px 2px;margin:-1px -2px}
+
+/* 핀 */
+.fb-card-pinned{background:linear-gradient(180deg,#fffbeb 0%,#fff 60%);border-color:#fde68a}
+.fb-pin-mark{font-size:11px;margin-right:1px;animation:fbPinPulse 2.4s ease-in-out infinite}
+@keyframes fbPinPulse{0%,100%{transform:rotate(-8deg)}50%{transform:rotate(8deg)}}
+
+/* 관리자 배지 (목록 소형) */
+.fb-admin-badge-sm{padding:1px 5px;font-size:9px;border-radius:8px}
+
+/* 인용 / 답글 액션 */
+.fb-reply-head{position:relative}
+.fb-reply-actions{margin-left:auto;display:flex;gap:3px;align-items:center}
+.fb-reply-quote{background:none;border:none;color:#94a3b8;cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px;transition:.15s;font-weight:700}
+.fb-reply-quote:hover{background:#eff6ff;color:#1d4ed8}
+
+/* 리액션 바 */
+.fb-react-bar{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:10px}
+.fb-react-pill{background:#fafbfc;border:1px solid #eef0f2;border-radius:14px;padding:3px 10px;font-size:12px;font-weight:600;color:#475569;cursor:pointer;transition:.15s;display:inline-flex;align-items:center;gap:4px}
+.fb-react-pill:hover{background:#fff;border-color:#cbd5e1;transform:translateY(-1px)}
+.fb-react-pill.on{background:#fef2f2;border-color:#fecaca;color:#bf0000}
+.fb-react-pill.on:hover{background:#fee2e2}
+.fb-react-pill b{font-weight:700;font-size:11px;font-variant-numeric:tabular-nums}
+.fb-react-add{position:relative}
+.fb-react-toggle{background:transparent;border:1px dashed #cbd5e1;border-radius:14px;padding:3px 10px;font-size:13px;color:#7d8590;cursor:pointer;transition:.15s;font-weight:700;line-height:1}
+.fb-react-toggle:hover{background:#fafbfc;border-style:solid;color:#15181e}
+.fb-react-menu{position:absolute;bottom:calc(100% + 6px);left:0;background:#fff;border:1px solid #eef0f2;border-radius:10px;padding:5px;display:none;gap:2px;box-shadow:0 8px 22px rgba(0,0,0,.12);z-index:5;white-space:nowrap}
+.fb-react-add:hover .fb-react-menu,.fb-react-add:focus-within .fb-react-menu{display:flex}
+.fb-react-add-btn{background:transparent;border:none;font-size:18px;padding:4px 7px;border-radius:6px;cursor:pointer;transition:.1s}
+.fb-react-add-btn:hover{background:#fafbfc;transform:scale(1.15)}
+
+/* 타이핑 */
+.fb-typing{font-size:11.5px;color:#94a3b8;padding:6px 4px;min-height:20px;display:flex;align-items:center;gap:5px}
+.fb-typing-dot{width:5px;height:5px;border-radius:50%;background:#94a3b8;display:inline-block;animation:fbTypingBlink 1.4s infinite ease-in-out both}
+.fb-typing-dot:nth-child(2){animation-delay:.2s}
+.fb-typing-dot:nth-child(3){animation-delay:.4s;margin-right:4px}
+@keyframes fbTypingBlink{0%,80%,100%{opacity:.2;transform:scale(.85)}40%{opacity:1;transform:scale(1)}}
+
+/* 草稿 힌트 */
+.fb-draft-hint{margin-left:auto;margin-right:10px;font-size:10.5px;color:#94a3b8;font-weight:600}
+
+/* 사이드바 사용자 pill */
+.me-pill{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#fafbfc;border:1px solid #eef0f2;border-radius:10px;margin-bottom:8px;transition:.15s}
+.me-pill.hidden{display:none}
+.me-pill:hover{background:#fff;border-color:#cbd5e1}
+.me-avatar{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#bf0000,#7c1010);color:#fff;font-size:10.5px;font-weight:800;letter-spacing:.5px;flex-shrink:0}
+.me-avatar-admin{background:linear-gradient(135deg,#fbbf24,#bf0000);box-shadow:0 0 0 2px rgba(191,0,0,.15)}
+.me-email{flex:1;font-size:11.5px;font-weight:600;color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.me-logout{background:none;border:1px solid transparent;color:#94a3b8;cursor:pointer;font-size:14px;padding:4px 8px;border-radius:6px;transition:.15s}
+.me-logout:hover{background:#fef2f2;border-color:#fecaca;color:#bf0000}
+
 .fb-replies-sec{margin-top:10px;padding-top:18px;border-top:1px solid #f0f2f5}
 .fb-replies-h{font-size:13px;font-weight:700;color:#15181e;margin:0 0 12px;display:flex;align-items:center;gap:6px}
 .fb-replies-list{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}

@@ -7,6 +7,7 @@
 <title>広告ダッシュボード · 楽天RMS</title>
 <link rel="stylesheet" href="/static/styles.css">
 <link rel="stylesheet" href="/static/feedback.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
 </head>
 <body>
@@ -31,6 +32,11 @@
       <button class="nav-item" data-view="feedback"><span>💬</span> お問い合わせ</button>
     </nav>
     <div class="sidebar-foot">
+      <div id="me-pill" class="me-pill hidden">
+        <span class="me-avatar" id="me-avatar">—</span>
+        <span class="me-email" id="me-email"></span>
+        <button class="me-logout" id="btn-logout" title="ログアウト">⏻</button>
+      </div>
       <button id="btn-settings" class="ghost-btn">⚙️ 設定</button>
       <div class="ver">v0.1 · local</div>
     </div>
@@ -366,6 +372,7 @@
   <div class="fb-modal-card">
     <div class="fb-modal-head">
       <h2 id="fb-modal-title">新規投稿</h2>
+      <span class="fb-draft-hint" id="fb-draft-hint"></span>
       <button class="fb-modal-x" id="fb-modal-close">✕</button>
     </div>
     <div class="fb-modal-body">

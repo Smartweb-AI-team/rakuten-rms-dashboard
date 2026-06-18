@@ -198,7 +198,33 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (cfg.auth_disabled) return; // 로컬 server.py
   const tok = sessionStorage.getItem("sb_access_token");
   if (!tok) showLogin();
+  // 사이드바 사용자 pill + 로그아웃
+  _updateMePill();
+  const btnLogout = document.getElementById("btn-logout");
+  if (btnLogout) btnLogout.onclick = () => {
+    if (!confirm("ログアウトしますか？")) return;
+    sessionStorage.removeItem("sb_access_token");
+    sessionStorage.removeItem("sb_refresh_token");
+    location.reload();
+  };
 });
+
+function _updateMePill() {
+  const pill = document.getElementById("me-pill");
+  if (!pill) return;
+  const tok = sessionStorage.getItem("sb_access_token");
+  if (!tok) { pill.classList.add("hidden"); return; }
+  try {
+    const payload = JSON.parse(atob(tok.split(".")[1]));
+    const email = payload.email || "";
+    const adminEmail = (AUTH_CFG && AUTH_CFG.admin_email) ? AUTH_CFG.admin_email.toLowerCase() : "";
+    const isAdmin = adminEmail && email.toLowerCase() === adminEmail;
+    document.getElementById("me-avatar").textContent = (email.slice(0, 2) || "??").toUpperCase();
+    document.getElementById("me-avatar").classList.toggle("me-avatar-admin", !!isAdmin);
+    document.getElementById("me-email").textContent = email;
+    pill.classList.remove("hidden");
+  } catch { pill.classList.add("hidden"); }
+}
 
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -408,10 +434,51 @@ let FB_STATE = {
   query: "",
   posts: [],
   selectedId: null,
-  attachments: [],  // 모달 첨부 파일 (File 객체 + uploaded path)
+  attachments: [],
   modalEditId: null,
+  replyCounts: {},
+  reactionsByPost: {},   // {post_id: [{emoji, count, mine}]}
+  reactionsByReply: {},  // {reply_id: [{emoji, count, mine}]}
+  typingTimers: {},      // {post_id: timer}
+  typingDisplay: {},     // {post_id: {email, until}}
 };
 let FB_INIT = false;
+let FB_SB = null;        // Supabase JS client (realtime 전용)
+let FB_REALTIME = null;  // 활성 channel
+const FB_EMOJIS = ["👍", "❤️", "🎉", "😄", "🙏", "✅"];
+const FB_DRAFT_KEY = "fb_draft_v1";
+
+// 본문 안전 렌더 + 링크 자동감지
+function _fbRenderBody(text) {
+  const esc = escapeHtml(text || "");
+  // URL 매칭 (http(s)://) — escape 한 결과의 &amp; 도 정상 처리
+  const re = /(https?:\/\/[^\s<]+[^\s<.,;:!?)\]])/g;
+  return esc
+    .replace(re, '<a href="$1" target="_blank" rel="noopener" class="fb-link">$1</a>')
+    .replace(/\n/g, "<br>");
+}
+
+function _fbDraftSave(data) {
+  try { localStorage.setItem(FB_DRAFT_KEY, JSON.stringify(data || {})); } catch {}
+}
+function _fbDraftLoad() {
+  try { return JSON.parse(localStorage.getItem(FB_DRAFT_KEY) || "null"); } catch { return null; }
+}
+function _fbDraftClear() {
+  try { localStorage.removeItem(FB_DRAFT_KEY); } catch {}
+}
+
+function _fbSbClient() {
+  if (FB_SB) return FB_SB;
+  if (!window.supabase || !AUTH_CFG) return null;
+  FB_SB = window.supabase.createClient(AUTH_CFG.supabase_url, AUTH_CFG.supabase_anon_key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    realtime: { params: { eventsPerSecond: 5 } },
+  });
+  const tok = sessionStorage.getItem("sb_access_token");
+  if (tok) FB_SB.realtime.setAuth(tok);
+  return FB_SB;
+}
 
 async function _sbFetch(path, opts = {}) {
   const cfg = await loadAuthConfig();
@@ -511,39 +578,162 @@ function _fbRelTime(iso) {
 async function loadFeedbackView() {
   if (!FB_INIT) {
     _fbBindEvents();
+    _fbInitRealtime();
     FB_INIT = true;
   }
   await _fbReloadList();
 }
 
+function _fbInitRealtime() {
+  const sb = _fbSbClient();
+  if (!sb) return;
+  if (FB_REALTIME) { try { sb.removeChannel(FB_REALTIME); } catch {} }
+  FB_REALTIME = sb.channel("feedback-room", { config: { broadcast: { self: false } } })
+    .on("postgres_changes", { event: "*", schema: "public", table: "feedback_posts" }, () => _fbReloadList())
+    .on("postgres_changes", { event: "*", schema: "public", table: "feedback_replies" }, (payload) => {
+      const pid = payload.new?.post_id || payload.old?.post_id;
+      // 토스트 (다른 사람 새 답글)
+      if (payload.eventType === "INSERT") {
+        const me = _fbCurrentUser();
+        if (payload.new && me?.id !== payload.new.user_id) {
+          if (FB_STATE.selectedId !== pid) toast("💬 新しい返信があります", "ok");
+        }
+      }
+      if (FB_STATE.selectedId === pid) _fbSelectPost(pid);
+      _fbReloadList();
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "feedback_reactions" }, () => {
+      if (FB_STATE.selectedId) _fbLoadReactions([FB_STATE.selectedId]);
+      _fbReloadList();
+    })
+    .on("broadcast", { event: "typing" }, (msg) => {
+      const { post_id, email } = msg.payload || {};
+      if (!post_id) return;
+      FB_STATE.typingDisplay[post_id] = { email, until: Date.now() + 4000 };
+      _fbRenderTyping(post_id);
+    })
+    .subscribe();
+}
+
+function _fbBroadcastTyping(post_id) {
+  if (!FB_REALTIME) return;
+  const me = _fbCurrentUser();
+  try {
+    FB_REALTIME.send({ type: "broadcast", event: "typing",
+      payload: { post_id, email: me?.email || "?" } });
+  } catch {}
+}
+
+function _fbRenderTyping(post_id) {
+  if (FB_STATE.selectedId !== post_id) return;
+  const el = document.getElementById("fb-typing");
+  if (!el) return;
+  const info = FB_STATE.typingDisplay[post_id];
+  if (!info || info.until < Date.now()) {
+    el.textContent = "";
+    return;
+  }
+  const name = (info.email || "?").split("@")[0];
+  el.innerHTML = `<span class="fb-typing-dot"></span><span class="fb-typing-dot"></span><span class="fb-typing-dot"></span> ${escapeHtml(name)} が入力中…`;
+  setTimeout(() => _fbRenderTyping(post_id), 1000);
+}
+
 async function _fbReloadList() {
   const list = document.getElementById("fb-list");
-  list.innerHTML = `<div class="fb-empty">読み込み中…</div>`;
+  if (list.children.length === 0 || list.querySelector(".fb-empty")) list.innerHTML = `<div class="fb-empty">読み込み中…</div>`;
   try {
-    // 두 호출 병렬: 글 목록 + 답글 (id, post_id 만 가져와 카운트)
     const [rPosts, rReplies] = await Promise.all([
       _sbFetch("feedback_posts?select=*&order=created_at.desc&limit=200"),
       _sbFetch("feedback_replies?select=id,post_id"),
     ]);
     if (!rPosts.ok) {
-      const txt = await rPosts.text().catch(() => "");
       if (rPosts.status === 404) {
         list.innerHTML = `<div class="fb-empty">テーブル未作成です。<br><b>Supabase Dashboard → SQL Editor</b> で<br><code>supabase_feedback_schema.sql</code> を実行してください。</div>`;
         return;
       }
+      const txt = await rPosts.text().catch(() => "");
       throw new Error("HTTP " + rPosts.status + " " + txt.slice(0, 100));
     }
     FB_STATE.posts = await rPosts.json();
-    // 답글 카운트 맵
     FB_STATE.replyCounts = {};
     if (rReplies.ok) {
       const replies = await rReplies.json();
       for (const r of replies) FB_STATE.replyCounts[r.post_id] = (FB_STATE.replyCounts[r.post_id] || 0) + 1;
     }
+    // 글 리액션 카운트 (post 단위만)
+    await _fbLoadReactions(FB_STATE.posts.map(p => p.id), { onlyPosts: true });
     _fbRenderList();
   } catch (e) {
     list.innerHTML = `<div class="fb-empty">読み込み失敗: ${escapeHtml(String(e.message || e))}</div>`;
   }
+}
+
+async function _fbLoadReactions(postIds, opts = {}) {
+  if (!postIds.length) return;
+  try {
+    const me = _fbCurrentUser();
+    const rPost = await _sbFetch(`feedback_reactions?post_id=in.(${postIds.join(",")})&select=*`);
+    if (rPost.ok) {
+      const rows = await rPost.json();
+      const byPost = {};
+      for (const r of rows) {
+        const k = r.post_id;
+        byPost[k] = byPost[k] || {};
+        byPost[k][r.emoji] = byPost[k][r.emoji] || { count: 0, mine: false };
+        byPost[k][r.emoji].count++;
+        if (me && r.user_id === me.id) byPost[k][r.emoji].mine = true;
+      }
+      for (const k in byPost) {
+        FB_STATE.reactionsByPost[k] = Object.entries(byPost[k]).map(([emoji, v]) => ({ emoji, ...v }));
+      }
+      // 빈 경우는 명시적으로 비움 (다른 사람이 0으로 만든 후)
+      for (const id of postIds) if (!byPost[id]) FB_STATE.reactionsByPost[id] = [];
+    }
+    if (opts.onlyPosts) return;
+    // 답글 리액션 (선택된 글의 답글만)
+    if (FB_STATE.selectedId) {
+      const rReply = await _sbFetch(`feedback_reactions?reply_id=not.is.null&select=*`);
+      if (rReply.ok) {
+        const rows = await rReply.json();
+        const byReply = {};
+        for (const r of rows) {
+          if (!r.reply_id) continue;
+          const k = r.reply_id;
+          byReply[k] = byReply[k] || {};
+          byReply[k][r.emoji] = byReply[k][r.emoji] || { count: 0, mine: false };
+          byReply[k][r.emoji].count++;
+          if (me && r.user_id === me.id) byReply[k][r.emoji].mine = true;
+        }
+        FB_STATE.reactionsByReply = {};
+        for (const k in byReply) {
+          FB_STATE.reactionsByReply[k] = Object.entries(byReply[k]).map(([emoji, v]) => ({ emoji, ...v }));
+        }
+      }
+    }
+  } catch {}
+}
+
+async function _fbToggleReaction(target, id, emoji) {
+  // target: 'post' | 'reply'
+  const me = _fbCurrentUser();
+  if (!me) return toast("ログインしてください", true);
+  const col = target === "post" ? "post_id" : "reply_id";
+  try {
+    // 본인 리액션 존재 여부 조회
+    const rExist = await _sbFetch(`feedback_reactions?${col}=eq.${id}&user_id=eq.${me.id}&emoji=eq.${encodeURIComponent(emoji)}&select=id`);
+    const rows = await rExist.json();
+    if (rows && rows.length) {
+      await _sbFetch(`feedback_reactions?id=eq.${rows[0].id}`, { method: "DELETE", headers: { "Prefer": "return=minimal" } });
+    } else {
+      const body = { emoji, user_email: me.email };
+      body[col] = id;
+      await _sbFetch("feedback_reactions", {
+        method: "POST",
+        headers: { "Prefer": "return=minimal" },
+        body: JSON.stringify(body),
+      });
+    }
+  } catch (e) { toast("リアクション失敗", true); }
 }
 
 function _fbRenderList() {
@@ -554,8 +744,9 @@ function _fbRenderList() {
     if (q && !(p.title.toLowerCase().includes(q) || (p.body || "").toLowerCase().includes(q))) return false;
     return true;
   });
-  // 정렬: 未対応 먼저 → 그 다음 최신순
+  // 정렬: 핀 → 未対応 → 최신순
   filtered.sort((a, b) => {
+    if (!!b.pinned !== !!a.pinned) return b.pinned ? 1 : -1;
     const ao = a.status === "open" ? 0 : 1;
     const bo = b.status === "open" ? 0 : 1;
     if (ao !== bo) return ao - bo;
@@ -574,20 +765,26 @@ function _fbRenderList() {
     const cat = FB_CAT_META[p.category] || FB_CAT_META.other;
     const st = FB_STATUS_META[p.status] || FB_STATUS_META.open;
     const repCount = (FB_STATE.replyCounts || {})[p.id] || 0;
+    const reacts = (FB_STATE.reactionsByPost || {})[p.id] || [];
+    const reactSum = reacts.reduce((s, r) => s + r.count, 0);
     const isSel = FB_STATE.selectedId === p.id;
     const author = (p.user_email || "—").split("@")[0];
+    const authorIsAdmin = _fbIsAdminEmail(p.user_email);
     return `
-      <div class="fb-card${isSel ? ' fb-card-sel' : ''}" data-id="${p.id}">
+      <div class="fb-card${isSel ? ' fb-card-sel' : ''}${p.pinned ? ' fb-card-pinned' : ''}" data-id="${p.id}">
         <div class="fb-card-top">
+          ${p.pinned ? `<span class="fb-pin-mark" title="ピン留め">📌</span>` : ""}
           <span class="fb-cat-pill" style="background:${cat.color}15;color:${cat.color}">${cat.icon} ${cat.label}</span>
           <span class="fb-st-pill" style="background:${st.bg};color:${st.color}">${st.label}</span>
         </div>
         <div class="fb-card-title">${escapeHtml(p.title)}</div>
         <div class="fb-card-meta">
           <span>${escapeHtml(author)}</span>
+          ${authorIsAdmin ? `<span class="fb-admin-badge fb-admin-badge-sm">管理者</span>` : ""}
           <span>·</span>
           <span>${_fbRelTime(p.created_at)}</span>
           ${repCount ? `<span class="fb-rep-badge">💬 ${repCount}</span>` : ""}
+          ${reactSum ? `<span class="fb-rep-badge">${reacts.map(r => r.emoji).slice(0,3).join("")} ${reactSum}</span>` : ""}
         </div>
       </div>
     `;
@@ -605,7 +802,7 @@ async function _fbSelectPost(id) {
   FB_STATE.selectedId = id;
   _fbRenderList();
   const detail = document.getElementById("fb-detail");
-  detail.innerHTML = `<div class="fb-empty">読み込み中…</div>`;
+  if (!detail.querySelector(".fb-detail-head")) detail.innerHTML = `<div class="fb-empty">読み込み中…</div>`;
   try {
     const [rPost, rReplies] = await Promise.all([
       _sbFetch(`feedback_posts?id=eq.${id}&select=*`),
@@ -614,10 +811,28 @@ async function _fbSelectPost(id) {
     const post = (await rPost.json())[0];
     const replies = await rReplies.json();
     if (!post) { detail.innerHTML = `<div class="fb-empty">見つかりません</div>`; return; }
+    await _fbLoadReactions([id]);
     _fbRenderDetail(post, replies);
   } catch (e) {
     detail.innerHTML = `<div class="fb-empty">読み込み失敗</div>`;
   }
+}
+
+function _fbReactionBar(target, id, list) {
+  const items = (list || []).filter(r => r.count > 0);
+  const have = new Set(items.map(r => r.emoji));
+  const pills = items.map(r =>
+    `<button class="fb-react-pill${r.mine ? ' on' : ''}" data-react="${target}:${id}:${r.emoji}">${r.emoji} <b>${r.count}</b></button>`).join("");
+  const addable = FB_EMOJIS.filter(e => !have.has(e));
+  return `<div class="fb-react-bar">
+    ${pills}
+    <div class="fb-react-add">
+      <button class="fb-react-toggle" title="リアクションを追加">＋</button>
+      <div class="fb-react-menu">
+        ${addable.map(e => `<button class="fb-react-add-btn" data-react="${target}:${id}:${e}">${e}</button>`).join("")}
+      </div>
+    </div>
+  </div>`;
 }
 
 function _fbRenderDetail(post, replies) {
@@ -637,17 +852,22 @@ function _fbRenderDetail(post, replies) {
     const rIsAdmin = _fbIsAdminEmail(r.user_email);
     const rAuthor = (r.user_email || "—").split("@")[0];
     const rAtt = (r.attachment_paths || []).map(p => _attImg(p, r.attachment_paths)).join("");
+    const rReact = FB_STATE.reactionsByReply[r.id] || [];
     return `
-      <div class="fb-reply${rIsAdmin ? ' fb-reply-admin' : (rIsOwn ? ' fb-reply-own' : '')}">
+      <div class="fb-reply${rIsAdmin ? ' fb-reply-admin' : (rIsOwn ? ' fb-reply-own' : '')}" data-rid="${r.id}">
         <div class="fb-reply-head">
           <span class="fb-avatar${rIsAdmin ? ' fb-avatar-admin' : ''}">${escapeHtml(rAuthor.slice(0,2).toUpperCase())}</span>
           <span class="fb-reply-author">${escapeHtml(rAuthor)}</span>
           ${rIsAdmin ? `<span class="fb-admin-badge">管理者</span>` : ""}
           <span class="fb-reply-time">${_fbRelTime(r.created_at)}</span>
-          ${(rIsOwn || isAdmin) ? `<button class="fb-reply-del" data-rid="${r.id}" title="削除">✕</button>` : ""}
+          <span class="fb-reply-actions">
+            <button class="fb-reply-quote" data-qrid="${r.id}" title="引用">↩</button>
+            ${(rIsOwn || isAdmin) ? `<button class="fb-reply-del" data-rid="${r.id}" title="削除">✕</button>` : ""}
+          </span>
         </div>
-        <div class="fb-reply-body">${escapeHtml(r.body).replace(/\n/g, "<br>")}</div>
+        <div class="fb-reply-body">${_fbRenderBody(r.body)}</div>
         ${rAtt ? `<div class="fb-att-grid">${rAtt}</div>` : ""}
+        ${_fbReactionBar("reply", r.id, rReact)}
       </div>
     `;
   }).join("");
@@ -667,17 +887,20 @@ function _fbRenderDetail(post, replies) {
         <span>${_fbRelTime(post.created_at)}</span>
         ${(isOwn || isAdmin) ? `
           <span style="margin-left:auto;display:flex;gap:6px">
+            ${isAdmin ? `<button class="fb-status-btn" id="fb-pin-toggle" title="${post.pinned ? 'ピン解除' : 'ピン留め'}">${post.pinned ? '📌 解除' : '📌 ピン'}</button>` : ""}
             ${isAdmin ? `<button class="fb-status-btn" id="fb-status-toggle">状態 ${st.label}</button>` : ""}
             ${isOwn ? `<button class="fb-btn-ghost-sm" id="fb-edit-post">編集</button>` : ""}
             ${(isOwn || isAdmin) ? `<button class="fb-btn-ghost-sm fb-danger" id="fb-delete-post">削除</button>` : ""}
           </span>` : ""}
       </div>
     </div>
-    <div class="fb-detail-body">${escapeHtml(post.body).replace(/\n/g, "<br>")}</div>
+    <div class="fb-detail-body">${_fbRenderBody(post.body)}</div>
     ${attHTML ? `<div class="fb-att-grid">${attHTML}</div>` : ""}
+    ${_fbReactionBar("post", post.id, FB_STATE.reactionsByPost[post.id] || [])}
     <div class="fb-replies-sec">
       <h3 class="fb-replies-h">💬 返信 (${replies.length})</h3>
       <div class="fb-replies-list">${repliesHTML || '<div class="fb-empty fb-empty-sm">まだ返信がありません</div>'}</div>
+      <div class="fb-typing" id="fb-typing"></div>
       <div class="fb-reply-form">
         <textarea id="fb-reply-body" rows="3" placeholder="返信を書く…"></textarea>
         <div class="fb-reply-form-foot">
@@ -690,8 +913,62 @@ function _fbRenderDetail(post, replies) {
     </div>
   `;
 
-  // 답글 폼 핸들러
+  // 답글 폼 핸들러 + 인용 + 타이핑 broadcast + Ctrl+V 첨부
   const replyAttachments = [];
+  const replyTextarea = document.getElementById("fb-reply-body");
+  // 타이핑 throttle (1.5초)
+  let typingLast = 0;
+  replyTextarea.addEventListener("input", () => {
+    const now = Date.now();
+    if (now - typingLast > 1500) {
+      typingLast = now;
+      _fbBroadcastTyping(post.id);
+    }
+  });
+  // 인용 버튼
+  detail.querySelectorAll(".fb-reply-quote").forEach(b => {
+    b.onclick = () => {
+      const rid = parseInt(b.dataset.qrid);
+      const target = replies.find(x => x.id === rid);
+      if (!target) return;
+      const qauthor = (target.user_email || "?").split("@")[0];
+      const quoted = target.body.split("\n").map(l => "> " + l).join("\n");
+      const cur = replyTextarea.value;
+      replyTextarea.value = `**@${qauthor}**\n${quoted}\n\n${cur}`;
+      replyTextarea.focus();
+      replyTextarea.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+  });
+  // 답글 박스 Ctrl+V 클립보드 이미지 첨부
+  replyTextarea.addEventListener("paste", (e) => {
+    if (!e.clipboardData) return;
+    const imgs = [...e.clipboardData.items].filter(it => it.kind === "file" && it.type?.startsWith("image/"));
+    if (!imgs.length) return;
+    e.preventDefault();
+    const info = document.getElementById("fb-reply-att-info");
+    (async () => {
+      for (const it of imgs) {
+        const f = it.getAsFile();
+        if (!f) continue;
+        const named = new File([f], f.name || `paste_${Date.now()}.png`, { type: f.type });
+        info.textContent = "アップロード中…";
+        try {
+          const p = await _sbStorageUpload(named);
+          replyAttachments.push(p);
+        } catch { toast("貼り付け失敗", true); }
+      }
+      info.textContent = `添付 ${replyAttachments.length}件`;
+    })();
+  });
+  // 리액션 버튼들
+  detail.querySelectorAll("[data-react]").forEach(b => {
+    b.onclick = async () => {
+      const [target, id, emoji] = b.dataset.react.split(":");
+      await _fbToggleReaction(target, parseInt(id), emoji);
+      // 옵티미스틱은 안 함 — realtime 으로 자동 갱신
+    };
+  });
+  // 첨부 버튼
   document.getElementById("fb-reply-attach").onclick = () =>
     document.getElementById("fb-reply-file").click();
   document.getElementById("fb-reply-file").onchange = async (e) => {
@@ -763,6 +1040,18 @@ function _fbRenderDetail(post, replies) {
         await _fbReloadList();
         _fbSelectPost(post.id);
       } catch (e) { toast("状態変更失敗: " + e.message, true); }
+    };
+    const pinBtn = document.getElementById("fb-pin-toggle");
+    if (pinBtn) pinBtn.onclick = async () => {
+      try {
+        await _sbFetch(`feedback_posts?id=eq.${post.id}`, {
+          method: "PATCH",
+          headers: { "Prefer": "return=minimal" },
+          body: JSON.stringify({ pinned: !post.pinned }),
+        });
+        await _fbReloadList();
+        _fbSelectPost(post.id);
+      } catch (e) { toast("ピン操作失敗", true); }
     };
   }
 
@@ -840,12 +1129,42 @@ function _fbBindEvents() {
   };
   document.getElementById("fb-submit").onclick = _fbSubmitPost;
 
+  // 임시저장 자동: 신규 작성 중 인풋 변경 시 (500ms throttle)
+  let draftTm = null;
+  const persistDraft = () => {
+    if (FB_STATE.modalEditId) return;  // 편집 모드는 저장 안 함
+    clearTimeout(draftTm);
+    draftTm = setTimeout(() => {
+      const title = document.getElementById("fb-title").value;
+      const body = document.getElementById("fb-body").value;
+      const cat = document.querySelector("#fb-cat-picker .fb-cat-btn.active")?.dataset.v || "question";
+      if (title || body) _fbDraftSave({ title, body, cat });
+      const hint = document.getElementById("fb-draft-hint");
+      if (hint && (title || body)) hint.textContent = "💾 自動保存済み";
+    }, 500);
+  };
+  document.getElementById("fb-title").addEventListener("input", persistDraft);
+  document.getElementById("fb-body").addEventListener("input", persistDraft);
+  document.querySelectorAll("#fb-cat-picker .fb-cat-btn").forEach(b => b.addEventListener("click", persistDraft));
+
   // Ctrl+V / Cmd+V 로 클립보드 이미지 자동 첨부 (모달 열려있을 때)
   document.addEventListener("paste", (e) => {
     const modal = document.getElementById("fb-modal");
     if (modal.classList.contains("hidden")) return;
+    // textarea/input 안에서 텍스트 paste 면 무시 (브라우저 기본 처리)
+    if (document.activeElement?.tagName === "TEXTAREA" || document.activeElement?.tagName === "INPUT") {
+      if (![...(e.clipboardData?.items || [])].some(it => it.kind === "file" && it.type?.startsWith("image/"))) return;
+    }
     if (!e.clipboardData) return;
     _fbHandleClipboardImages(e.clipboardData.items);
+  });
+
+  // ESC 로 모달 닫기
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      const m = document.getElementById("fb-modal");
+      if (m && !m.classList.contains("hidden")) _fbCloseModal();
+    }
   });
 }
 
@@ -889,14 +1208,28 @@ function _fbOpenModal(post) {
   FB_STATE.modalEditId = post ? post.id : null;
   FB_STATE.attachments = post ? (post.attachment_paths || []).map(p => ({ file: { name: p.split("/").pop() }, path: p, status: "done" })) : [];
   document.getElementById("fb-modal-title").textContent = post ? "投稿を編集" : "新規投稿";
-  document.getElementById("fb-title").value = post ? post.title : "";
-  document.getElementById("fb-body").value = post ? post.body : "";
+  // 신규 작성 시: localStorage 임시저장 복원
+  const draft = !post ? _fbDraftLoad() : null;
+  document.getElementById("fb-title").value = post ? post.title : (draft?.title || "");
+  document.getElementById("fb-body").value = post ? post.body : (draft?.body || "");
+  const targetCat = post ? post.category : (draft?.cat || "question");
   document.querySelectorAll("#fb-cat-picker .fb-cat-btn").forEach(b =>
-    b.classList.toggle("active", b.dataset.v === (post ? post.category : "question")));
+    b.classList.toggle("active", b.dataset.v === targetCat));
   _fbRenderAttachments();
+  // 草稿 復元 메시지
+  const hint = document.getElementById("fb-draft-hint");
+  if (hint) hint.textContent = (!post && draft && (draft.title || draft.body)) ? "💾 下書きを復元しました" : "";
   document.getElementById("fb-modal").classList.remove("hidden");
 }
 function _fbCloseModal() {
+  // 신규 작성 도중이면 저장 (편집은 저장 X)
+  if (!FB_STATE.modalEditId) {
+    const title = document.getElementById("fb-title")?.value || "";
+    const body = document.getElementById("fb-body")?.value || "";
+    const cat = document.querySelector("#fb-cat-picker .fb-cat-btn.active")?.dataset.v || "question";
+    if (title || body) _fbDraftSave({ title, body, cat });
+    else _fbDraftClear();
+  }
   document.getElementById("fb-modal").classList.add("hidden");
   FB_STATE.attachments = [];
   FB_STATE.modalEditId = null;
@@ -929,6 +1262,7 @@ async function _fbSubmitPost() {
       if (!r.ok) throw new Error("HTTP " + r.status);
       toast("投稿しました", "ok");
     }
+    _fbDraftClear();
     _fbCloseModal();
     await _fbReloadList();
   } catch (e) { toast("失敗: " + e.message, true); }
