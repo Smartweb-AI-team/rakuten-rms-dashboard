@@ -533,22 +533,34 @@ function _sbPublicUrl(path) {
   return `${AUTH_CFG.supabase_url}/storage/v1/object/public/feedback-attachments/${path}`;
 }
 
+function _fbNormEmail(e) {
+  return (e || "").trim().toLowerCase();
+}
 function _fbCurrentUser() {
-  // JWT payload 디코드 (email 추출용)
   const tok = sessionStorage.getItem("sb_access_token");
   if (!tok) return null;
   try {
     const payload = JSON.parse(atob(tok.split(".")[1]));
     const email = payload.email || "";
-    const adminEmail = (AUTH_CFG && AUTH_CFG.admin_email) ? AUTH_CFG.admin_email.toLowerCase() : "";
-    return { id: payload.sub, email, isAdmin: adminEmail && email.toLowerCase() === adminEmail };
+    const adminEmail = _fbNormEmail(AUTH_CFG && AUTH_CFG.admin_email);
+    const isAdmin = !!adminEmail && _fbNormEmail(email) === adminEmail;
+    return { id: payload.sub, email, isAdmin };
   } catch { return null; }
 }
-
 function _fbIsAdminEmail(email) {
-  const adminEmail = (AUTH_CFG && AUTH_CFG.admin_email) ? AUTH_CFG.admin_email.toLowerCase() : "";
-  return adminEmail && (email || "").toLowerCase() === adminEmail;
+  const adminEmail = _fbNormEmail(AUTH_CFG && AUTH_CFG.admin_email);
+  return !!adminEmail && _fbNormEmail(email) === adminEmail;
 }
+// 디버그용: 콘솔에서 fbDebug() 입력하면 admin 매칭 상태 출력
+window.fbDebug = () => {
+  const me = _fbCurrentUser();
+  console.log("[fb-debug] AUTH_CFG.admin_email =", AUTH_CFG?.admin_email);
+  console.log("[fb-debug] login email           =", me?.email);
+  console.log("[fb-debug] normalized admin      =", _fbNormEmail(AUTH_CFG?.admin_email));
+  console.log("[fb-debug] normalized login      =", _fbNormEmail(me?.email));
+  console.log("[fb-debug] isAdmin               =", me?.isAdmin);
+  return me;
+};
 
 // 이미지 라이트박스 (새 탭 대신 화면 위 모달)
 function _fbOpenLightbox(srcs, startIdx) {
@@ -1043,8 +1055,15 @@ function _fbRenderDetail(post, replies) {
     document.getElementById("fb-delete-post").onclick = async () => {
       if (!confirm("この投稿を削除しますか？")) return;
       try {
-        const r = await _sbFetch(`feedback_posts?id=eq.${post.id}`, { method: "DELETE", headers: { "Prefer": "return=minimal" } });
+        // return=representation 로 삭제된 row 반환 → 0이면 RLS로 막힘
+        const r = await _sbFetch(`feedback_posts?id=eq.${post.id}`, {
+          method: "DELETE", headers: { "Prefer": "return=representation" } });
         if (!r.ok) throw new Error("HTTP " + r.status);
+        const deleted = await r.json().catch(() => []);
+        if (!Array.isArray(deleted) || deleted.length === 0) {
+          toast("削除権限がありません (RLS で拒否) — ADMIN_EMAIL 設定 / 投稿者本人か確認", true);
+          return;
+        }
         FB_STATE.selectedId = null;
         document.getElementById("fb-detail").innerHTML = `<div class="fb-empty">投稿を選択してください</div>`;
         await _fbReloadList();
@@ -1094,7 +1113,15 @@ function _fbRenderDetail(post, replies) {
     b.onclick = async () => {
       if (!confirm("この返信を削除しますか？")) return;
       try {
-        await _sbFetch(`feedback_replies?id=eq.${b.dataset.rid}`, { method: "DELETE", headers: { "Prefer": "return=minimal" } });
+        const r = await _sbFetch(`feedback_replies?id=eq.${b.dataset.rid}`, {
+          method: "DELETE", headers: { "Prefer": "return=representation" } });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const del = await r.json().catch(() => []);
+        if (!Array.isArray(del) || del.length === 0) {
+          toast("削除権限がありません", true);
+          return;
+        }
+        toast("削除しました", "ok");
         _fbSelectPost(post.id);
       } catch (e) { toast("削除失敗", true); }
     };
@@ -3272,6 +3299,154 @@ async function exportPptx() {
     topSlide("TOP キャンペーン", tc.rows || [], "キャンペーン");
     topSlide("TOP 商品", ti.rows || [], "商品");
     topSlide("TOP キーワード", tk.rows || [], "キーワード");
+
+    /* ───────────── 일반 모드 전용 추가 슬라이드 ───────────── */
+    if (!isCompare) {
+      // (가) 新規 vs 既存 顧客 比較
+      if (R.insNew && R.insExist) {
+        const a = R.insNew.current || {}, b = R.insExist.current || {};
+        const s = p.addSlide(); slides.push(s);
+        addPageHeader(s, "新規 vs 既存 顧客 (CV ベース)");
+        s.addText("新規顧客", { x: 0.55, y: 1.18, w: 6.1, h: 0.3, fontSize: 10, bold: true, color: ACC1 });
+        s.addText("既存顧客", { x: 6.7, y: 1.18, w: 6.1, h: 0.3, fontSize: 10, bold: true, color: ACC2 });
+        const KEYS = [
+          { k: "gms",     label: "売上 (GMS)",  fmt: yen },
+          { k: "ad_cost", label: "広告費",       fmt: yen },
+          { k: "cv",      label: "CV",          fmt: fmtN },
+          { k: "roas",    label: "ROAS",        fmt: fmtRoasV },
+          { k: "cvr",     label: "CVR",         fmt: fmtPct },
+          { k: "cpa",     label: "CPA",         fmt: yen },
+        ];
+        const tbl = [[
+          { text: "指標", options: { bold: true, fill: { color: BG }, fontSize: 10, color: GRAY } },
+          { text: "新規",  options: { bold: true, fill: { color: BG }, fontSize: 10, color: ACC1, align: "right" } },
+          { text: "既存",  options: { bold: true, fill: { color: BG }, fontSize: 10, color: ACC2, align: "right" } },
+          { text: "新規比率", options: { bold: true, fill: { color: BG }, fontSize: 10, color: GRAY, align: "right" } },
+        ]];
+        KEYS.forEach(K => {
+          const va = a[K.k], vb = b[K.k];
+          const ratio = (va != null && vb != null && (va + vb)) ? Math.round(va / (va + vb) * 100) : null;
+          tbl.push([
+            { text: K.label, options: { color: DARK, fontSize: 12, bold: true } },
+            { text: K.fmt(va), options: { align: "right", color: INK, fontSize: 12 } },
+            { text: K.fmt(vb), options: { align: "right", color: INK, fontSize: 12 } },
+            { text: ratio != null ? ratio + "%" : "—", options: { align: "right", bold: true, color: ACC1, fontSize: 12 } },
+          ]);
+        });
+        s.addTable(tbl, { x: 0.55, y: 1.6, w: 12.23, rowH: 0.5, border: { type: "solid", pt: 0.5, color: LINE }, fontFace: "Yu Gothic UI" });
+      }
+
+      // (나) キーワード 新規/소멸 (kwDiff)
+      if (kwDiff && ((kwDiff.entered || []).length || (kwDiff.gone || []).length)) {
+        const s = p.addSlide(); slides.push(s);
+        addPageHeader(s, "キーワード 変化 (前期間比)");
+        s.addText("★ 新規キーワード", { x: 0.55, y: 1.4, w: 6.1, h: 0.4, fontSize: 12, bold: true, color: GOOD });
+        s.addText("◆ 消失キーワード", { x: 6.7, y: 1.4, w: 6.1, h: 0.4, fontSize: 12, bold: true, color: BAD });
+        const mkTbl = (rows, accent) => {
+          const T = [[
+            { text: "キーワード", options: { bold: true, fill: { color: BG }, fontSize: 10, color: DARK } },
+            { text: "広告費", options: { bold: true, fill: { color: BG }, fontSize: 10, color: DARK, align: "right" } },
+            { text: "売上", options: { bold: true, fill: { color: BG }, fontSize: 10, color: DARK, align: "right" } },
+          ]];
+          rows.slice(0, 12).forEach(r => T.push([
+            { text: (r.dimension_key || "—").slice(0, 30), options: { color: INK, fontSize: 10 } },
+            { text: yen(r.cost), options: { align: "right", color: INK, fontSize: 10 } },
+            { text: yen(r.gms), options: { align: "right", color: accent, fontSize: 10, bold: true } },
+          ]));
+          if (!rows.length) T.push([{ text: "なし", options: { color: MUTED, fontSize: 10, italic: true } }, { text: "" }, { text: "" }]);
+          return T;
+        };
+        s.addTable(mkTbl(kwDiff.entered || [], GOOD),
+                   { x: 0.55, y: 1.85, w: 6.1, rowH: 0.32, fontSize: 10, fontFace: "Yu Gothic UI",
+                     border: { type: "solid", pt: 0.5, color: LINE } });
+        s.addTable(mkTbl(kwDiff.gone || [], BAD),
+                   { x: 6.7, y: 1.85, w: 6.13, rowH: 0.32, fontSize: 10, fontFace: "Yu Gothic UI",
+                     border: { type: "solid", pt: 0.5, color: LINE } });
+      }
+
+      // (다) 商品 × キーワード TOP (mx.items)
+      if (R.mx && R.mx.items && R.mx.items.length) {
+        const items = R.mx.items.slice().sort((a, b) => (b.total_gms || 0) - (a.total_gms || 0)).slice(0, 6);
+        const s = p.addSlide(); slides.push(s);
+        addPageHeader(s, "商品 × キーワード TOP");
+        let y = 1.45;
+        items.forEach((it, i) => {
+          const kws = (it.keywords || []).slice().sort((a, b) => (b.gms || 0) - (a.gms || 0)).slice(0, 3);
+          const itemLabel = (it.item_label || it.item_url || "—").slice(0, 50);
+          // 상품 카드 헤더
+          s.addShape(p.ShapeType.roundRect, { x: 0.55, y, w: 12.23, h: 0.8, fill: { color: BG }, line: { color: LINE, width: 0.5 }, rectRadius: 0.04 });
+          s.addText(`#${i + 1}`, { x: 0.7, y: y + 0.18, w: 0.6, h: 0.45, fontSize: 16, bold: true, color: RED, fontFace: "Yu Gothic UI" });
+          s.addText(itemLabel, { x: 1.4, y: y + 0.15, w: 7.0, h: 0.3, fontSize: 12, bold: true, color: DARK, fontFace: "Yu Gothic UI" });
+          s.addText(`KW × ${(it.keyword_count || 0)}`, { x: 1.4, y: y + 0.45, w: 7, h: 0.25, fontSize: 9, color: MUTED });
+          // KPI 우측 정렬
+          s.addText(`売上 ${yen(it.total_gms)}`, { x: 8.5, y: y + 0.12, w: 3.5, h: 0.3, fontSize: 11, color: INK, align: "right", bold: true });
+          s.addText(`ROAS ${fmtRoasV(it.roas)}`, { x: 8.5, y: y + 0.42, w: 3.5, h: 0.3, fontSize: 11, color: RED, align: "right", bold: true });
+          y += 0.85;
+          // 상위 키워드 한 줄
+          if (kws.length) {
+            const kwText = kws.map(k => `${k.keyword || "?"} (${yen(k.gms)})`).join("   ·   ");
+            s.addText("  └ " + kwText, { x: 0.7, y, w: 12.1, h: 0.3, fontSize: 9.5, color: GRAY, fontFace: "Yu Gothic UI" });
+            y += 0.32;
+          }
+          y += 0.1;
+        });
+      }
+
+      // (라) 전년 동기 비교 (seasonality)
+      if (R.season && R.season.has_prev) {
+        const cur = R.season.current || {}, pyy = R.season.prev_year || {}, yoy = R.season.yoy || {};
+        const s = p.addSlide(); slides.push(s);
+        addPageHeader(s, "前年同期 比較 (YoY)");
+        s.addText(`今年 ${f.from} 〜 ${f.to}`, { x: 0.55, y: 1.18, w: 6.1, h: 0.3, fontSize: 10, bold: true, color: RED });
+        s.addText(`前年 ${R.season.prev_range?.from || "—"} 〜 ${R.season.prev_range?.to || "—"}`, { x: 6.7, y: 1.18, w: 6.1, h: 0.3, fontSize: 10, bold: true, color: GRAY });
+        const KEYS = [
+          { k: "gms",     label: "売上 (GMS)" },
+          { k: "ad_cost", label: "広告費" },
+          { k: "clicks",  label: "クリック" },
+          { k: "cv",      label: "CV" },
+          { k: "roas",    label: "ROAS", fmt: fmtRoasV },
+        ];
+        const tbl = [[
+          { text: "指標", options: { bold: true, fill: { color: BG }, fontSize: 10, color: GRAY } },
+          { text: "今年",  options: { bold: true, fill: { color: BG }, fontSize: 10, color: RED, align: "right" } },
+          { text: "前年",  options: { bold: true, fill: { color: BG }, fontSize: 10, color: GRAY, align: "right" } },
+          { text: "YoY",   options: { bold: true, fill: { color: BG }, fontSize: 10, color: DARK, align: "right" } },
+        ]];
+        KEYS.forEach(K => {
+          const fn = K.fmt || (typeof K.k === "string" && K.k === "roas" ? fmtRoasV : yen);
+          const va = cur[K.k], vb = pyy[K.k], yoyV = yoy[K.k];
+          const dp = dPill(yoyV);
+          tbl.push([
+            { text: K.label, options: { color: DARK, fontSize: 12, bold: true } },
+            { text: fn(va), options: { align: "right", color: INK, fontSize: 12 } },
+            { text: fn(vb), options: { align: "right", color: GRAY, fontSize: 12 } },
+            { text: dp.text, options: { align: "right", bold: true, color: dp.color, fontSize: 12 } },
+          ]);
+        });
+        s.addTable(tbl, { x: 0.55, y: 1.6, w: 12.23, rowH: 0.5, border: { type: "solid", pt: 0.5, color: LINE }, fontFace: "Yu Gothic UI" });
+      }
+
+      // (마) 이상치 일자 (outliers)
+      if (R.outliers && R.outliers.length) {
+        const top = R.outliers.slice(0, 8);
+        const s = p.addSlide(); slides.push(s);
+        addPageHeader(s, "異常値 (IQR×1.5)");
+        const tbl = [[
+          { text: "日付", options: { bold: true, fill: { color: BG }, fontSize: 10, color: GRAY } },
+          { text: "指標", options: { bold: true, fill: { color: BG }, fontSize: 10, color: GRAY } },
+          { text: "値",   options: { bold: true, fill: { color: BG }, fontSize: 10, color: GRAY, align: "right" } },
+          { text: "種別", options: { bold: true, fill: { color: BG }, fontSize: 10, color: GRAY, align: "center" } },
+        ]];
+        top.forEach(o => tbl.push([
+          { text: o.date, options: { color: INK, fontSize: 11 } },
+          { text: o.metric, options: { color: INK, fontSize: 11 } },
+          { text: fmtN(o.value), options: { align: "right", color: INK, fontSize: 11 } },
+          { text: o.kind === "high" ? "▲ 高" : "▼ 低",
+            options: { align: "center", bold: true, color: o.kind === "high" ? GOOD : BAD, fontSize: 11 } },
+        ]));
+        s.addTable(tbl, { x: 0.55, y: 1.5, w: 12.23, rowH: 0.42, border: { type: "solid", pt: 0.5, color: LINE }, fontFace: "Yu Gothic UI" });
+      }
+    }
 
     /* ───────────── 비교 모드 전용 슬라이드 ───────────── */
     if (isCompare) {
