@@ -869,29 +869,44 @@ td.td-pure b{color:#0c5a99}
   .mx-stat,.mx-share{display:none}
 }
 @media print{
-  .rep-doc{box-shadow:none;border:0;padding:0;max-width:100%}
-  .rep-sec{break-inside:avoid;page-break-inside:avoid}
-  .rep-cover{break-after:auto}
-  .rep-tbl tr{break-inside:avoid}
-  /* PDF: 모든 details 펼침 + 화살표 숨김 */
-  details{display:block !important}
-  details > summary{cursor:default;list-style:none}
-  details > summary::-webkit-details-marker{display:none}
-  .ik-row > summary::before{display:none}
-  .ik-row{break-inside:avoid;page-break-inside:avoid}
-  .ik-tbl{break-inside:auto}
-  /* 섹션마다 페이지 분할 (큰 섹션 우선) */
-  #sec-risk,#sec-growth,#sec-item-kw,#sec-trend{page-break-before:auto}
-  @page{margin:14mm 12mm}
-}
-
-/* 印刷 (PDF出力) */
-@media print{
-  .sidebar,.topbar,.no-print{display:none !important}
-  body{background:#fff}
-  .view{padding:0}
-  #report-body{box-shadow:none;border:0}
+  /* 모든 컬러 인쇄 강제 (배경색·라벨·차트) */
+  *,*::before,*::after{
+    -webkit-print-color-adjust:exact !important;
+    print-color-adjust:exact !important;
+    color-adjust:exact !important;
+  }
+  html,body{background:#fff !important;margin:0;padding:0}
+  /* 사이드바 / 헤더 / 모달 / 토스트 등 무시 */
+  .sidebar,.topbar,.no-print,#fb-modal,#fb-lightbox,.toast,
+  #login-modal,#settings-modal,#cmp-modal{display:none !important}
+  .main{margin-left:0 !important;padding:0 !important}
+  .view{padding:0 !important}
   .view:not(#view-report){display:none !important}
+  /* 레포트 외관 */
+  #report-body{box-shadow:none;border:0;padding:0;background:#fff}
+  .rep-doc{box-shadow:none;border:0;padding:0;max-width:100%;background:#fff}
+  .rep-shell{grid-template-columns:1fr !important;gap:0 !important}
+  /* 페이지 break: 큰 섹션은 새 페이지에서 시작 */
+  .rep-sec{break-inside:avoid;page-break-inside:avoid;margin:14px 0}
+  .rep-cover{break-after:page}
+  .rep-tbl tr{break-inside:avoid}
+  #sec-trend,#sec-growth,#sec-risk,#sec-item-kw{break-before:auto}
+  /* details 펼치기 */
+  details{display:block !important}
+  details[open],details:not([open]){display:block !important}
+  details > summary{cursor:default;list-style:none;pointer-events:none}
+  details > summary::-webkit-details-marker,
+  details > summary::marker{display:none}
+  .ik-row > summary::before{display:none}
+  .ik-row,details{break-inside:avoid;page-break-inside:avoid}
+  /* 차트 / 이미지 */
+  canvas,img{max-width:100%;height:auto;break-inside:avoid;page-break-inside:avoid}
+  /* 폰트 약간 줄여 페이지 효율 향상 */
+  .rep-doc,.rep-doc *{font-size:11pt}
+  .rep-sub,h2,h3{font-size:14pt}
+  .rep-title,h1{font-size:22pt}
+  /* 페이지 여백 */
+  @page{size:A4;margin:14mm 12mm}
 }
 
 /* レスポンシブ */

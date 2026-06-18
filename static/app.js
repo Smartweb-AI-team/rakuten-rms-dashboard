@@ -3034,107 +3034,248 @@ async function exportPptx() {
     const q = (fr, to) => `from=${fr}&to=${to}&product=${f.product}&window=${win}&segment=${seg}`;
     const days = (new Date(f.to) - new Date(f.from)) / 86400000 + 1;
     const pTo = addDays(f.from, -1), pFrom = addDays(pTo, -(days - 1));
-    const [ins, tc, ti, tk, wk] = await Promise.all([
+    const [ins, series, sPrev, tc, ti, tk, wk] = await Promise.all([
       api.get(`/api/kpis?${q(f.from, f.to)}&selection_type=1`),
-      api.get(`/api/top?${q(f.from, f.to)}&selection_type=2&order_by=ad_cost&limit=5`),
-      api.get(`/api/top?${q(f.from, f.to)}&selection_type=3&order_by=ad_cost&limit=5`),
-      api.get(`/api/top?${q(f.from, f.to)}&selection_type=4&order_by=ad_cost&limit=5`),
+      api.get(`/api/series?${q(f.from, f.to)}&selection_type=1`),
+      api.get(`/api/series?${q(pFrom, pTo)}&selection_type=1`).catch(() => ({ series: [] })),
+      api.get(`/api/top?${q(f.from, f.to)}&selection_type=2&order_by=ad_cost&limit=8`),
+      api.get(`/api/top?${q(f.from, f.to)}&selection_type=3&order_by=ad_cost&limit=8`),
+      api.get(`/api/top?${q(f.from, f.to)}&selection_type=4&order_by=ad_cost&limit=8`),
       api.get(`/api/weekday?${q(f.from, f.to)}`),
     ]);
-    const c = ins.current, dl = ins.deltas;
+    const c = ins.current || {}, dl = ins.deltas || {};
     const client = localStorage.getItem("rep_client") || "楽天RMS 広告アナリティクス";
     const subtitle = localStorage.getItem("rep_subtitle") || "広告パフォーマンス・レポート";
     const narrative = localStorage.getItem("rep_narrative_" + f.from + "_" + f.to) || ins.narrative || "";
+    const bullets = ins.bullets || [];
+    const actions = ins.actions || [];
+    const logo = localStorage.getItem("rep_logo");
 
     const p = new Pptx();
-    p.layout = "LAYOUT_WIDE"; // 13.33 × 7.5
-    const RED = "BF0000", DARK = "15181E", GRAY = "737A87", LINE = "E9EBF0", ACCENT = "0C5A99";
+    p.layout = "LAYOUT_WIDE";  // 13.33 × 7.5 inch
+    // 컬러 팔레트 (Notion/Linear 풍)
+    const RED = "BF0000", DARK = "15181E", INK = "1E293B", GRAY = "64748B",
+          MUTED = "94A3B8", LINE = "EEF0F2", BG = "FAFBFC", GOOD = "0C7A3E", BAD = "BF0000",
+          ACC1 = "1D4ED8", ACC2 = "7C3AED", LIGHT_RED = "FEE2E2";
 
-    // Slide 1 — 표지
-    const s1 = p.addSlide();
-    s1.background = { color: "FFFFFF" };
-    s1.addShape(p.ShapeType.rect, { x: 0, y: 0, w: 13.33, h: 0.18, fill: { color: RED } });
-    s1.addText(subtitle, { x: 0.6, y: 0.6, w: 12, h: 0.4, fontSize: 12, color: RED, bold: true, charSpacing: 2 });
-    s1.addText(client, { x: 0.6, y: 1.0, w: 12, h: 1.0, fontSize: 36, bold: true, color: DARK });
-    s1.addText([
-      { text: "対象期間 ", options: { color: GRAY, fontSize: 11 } },
-      { text: `${f.from} 〜 ${f.to}\n`, options: { bold: true, fontSize: 13 } },
-      { text: "広告種別 ", options: { color: GRAY, fontSize: 11 } },
-      { text: `${f.product === "ALL" ? "全広告" : f.product}\n`, options: { bold: true, fontSize: 13 } },
-      { text: "作成日 ", options: { color: GRAY, fontSize: 11 } },
-      { text: `${new Date().toLocaleDateString("ja-JP")}`, options: { bold: true, fontSize: 13 } },
-    ], { x: 0.6, y: 2.5, w: 12, h: 2 });
+    // 헬퍼
+    const yen = v => v == null ? "—" : "¥" + Math.round(v).toLocaleString("ja-JP");
+    const fmtPct = v => v == null ? "—" : (v * 100).toFixed(2) + "%";
+    const fmtRoasV = v => v == null ? "—" : Math.round(v * 100) + "%";
+    const fmtN = v => v == null ? "—" : Math.round(v).toLocaleString("ja-JP");
+    const dPill = d => d == null ? { text: "—", color: GRAY }
+                     : d > 0 ? { text: `▲ ${Math.abs(d)}%`, color: GOOD }
+                     : d < 0 ? { text: `▼ ${Math.abs(d)}%`, color: BAD }
+                     : { text: "横ばい", color: GRAY };
 
-    // Slide 2 — サマリー (자연어)
-    if (narrative) {
-      const s3 = p.addSlide();
-      s3.addText("サマリー", { x: 0.6, y: 0.4, w: 12, h: 0.5, fontSize: 22, bold: true, color: DARK });
-      s3.addShape(p.ShapeType.line, { x: 0.6, y: 0.95, w: 12, h: 0, line: { color: LINE, width: 1 } });
-      s3.addShape(p.ShapeType.rect, { x: 0.6, y: 1.4, w: 12.1, h: 0.05, fill: { color: RED } });
-      s3.addText(narrative, { x: 0.7, y: 1.6, w: 12, h: 5, fontSize: 16, color: DARK, valign: "top" });
-    }
-
-    // Slide 4 — KPI 표
-    const s4 = p.addSlide();
-    s4.addText("KPI 詳細", { x: 0.6, y: 0.4, w: 12, h: 0.5, fontSize: 22, bold: true, color: DARK });
-    s4.addShape(p.ShapeType.line, { x: 0.6, y: 0.95, w: 12, h: 0, line: { color: LINE, width: 1 } });
-    const kpiRows = [
-      ["売上 (GMS)", c.gms ? "¥" + Math.round(c.gms).toLocaleString() : "—", dl.gms],
-      ["広告費", c.ad_cost ? "¥" + Math.round(c.ad_cost).toLocaleString() : "—", dl.ad_cost],
-      ["クリック", c.clicks ? c.clicks.toLocaleString() : "—", dl.clicks],
-      ["CTR", c.ctr != null ? (c.ctr * 100).toFixed(2) + "%" : "—", null],
-      ["CV", c.cv ? c.cv.toLocaleString() : "—", dl.cv],
-      ["CVR", c.cvr != null ? (c.cvr * 100).toFixed(2) + "%" : "—", null],
-      ["ROAS", c.roas ? Math.round(c.roas * 100) + "%" : "—", dl.roas],
-      ["CPC", c.cpc ? "¥" + Math.round(c.cpc).toLocaleString() : "—", null],
-      ["CPA", c.cpa ? "¥" + Math.round(c.cpa).toLocaleString() : "—", null],
-    ];
-    s4.addTable([
-      [{ text: "指標", options: { bold: true, fill: { color: "FAFBFC" }, color: DARK } },
-       { text: "値", options: { bold: true, fill: { color: "FAFBFC" }, color: DARK, align: "right" } },
-       { text: "比較期間比", options: { bold: true, fill: { color: "FAFBFC" }, color: DARK, align: "right" } }],
-      ...kpiRows.map(([l, v, d]) => [
-        { text: l, options: { color: DARK } },
-        { text: String(v), options: { align: "right" } },
-        { text: d == null ? "—" : `${d > 0 ? "▲" : "▼"} ${Math.abs(d)}%`,
-          options: { align: "right", color: d == null ? GRAY : (d > 0 ? "0EA36B" : "E23B3B"), bold: true } }
-      ])
-    ], { x: 0.6, y: 1.3, w: 12, fontSize: 12, border: { type: "solid", pt: 0.5, color: LINE }, rowH: 0.4 });
-
-    // Slide 5 — TOP 표 3종
-    const topSlide = (title, rows, dl_label) => {
-      const s = p.addSlide();
-      s.addText(title, { x: 0.6, y: 0.4, w: 12, h: 0.5, fontSize: 22, bold: true, color: DARK });
-      s.addShape(p.ShapeType.line, { x: 0.6, y: 0.95, w: 12, h: 0, line: { color: LINE, width: 1 } });
-      const tbl = [[{ text: dl_label, options: { bold: true, fill: { color: "FAFBFC" } } },
-                    { text: "売上", options: { bold: true, fill: { color: "FAFBFC" }, align: "right" } },
-                    { text: "広告費", options: { bold: true, fill: { color: "FAFBFC" }, align: "right" } },
-                    { text: "ROAS", options: { bold: true, fill: { color: "FAFBFC" }, align: "right" } }]];
-      rows.forEach((r, i) => tbl.push([
-        { text: `${i + 1}. ${(r.dimension_key || r.campaign_name || "—").slice(0, 50)}` },
-        { text: "¥" + Math.round(r.gms || 0).toLocaleString(), options: { align: "right" } },
-        { text: "¥" + Math.round(r.ad_cost || 0).toLocaleString(), options: { align: "right" } },
-        { text: r.roas ? Math.round(r.roas * 100) + "%" : "—", options: { align: "right", bold: true, color: RED } },
-      ]));
-      s.addTable(tbl, { x: 0.6, y: 1.3, w: 12, fontSize: 12, border: { type: "solid", pt: 0.5, color: LINE }, rowH: 0.4 });
+    const addPageHeader = (s, title) => {
+      // 상단 좌측: 작은 빨간 점 + 라벨
+      s.addShape(p.ShapeType.rect, { x: 0, y: 0, w: 13.33, h: 0.06, fill: { color: RED } });
+      s.addText(title, { x: 0.55, y: 0.35, w: 11, h: 0.5, fontSize: 22, bold: true, color: DARK, fontFace: "Yu Gothic UI" });
+      s.addText(`${f.from} 〜 ${f.to}`, { x: 0.55, y: 0.78, w: 11, h: 0.3, fontSize: 10, color: MUTED });
+      s.addShape(p.ShapeType.line, { x: 0.55, y: 1.18, w: 12.23, h: 0, line: { color: LINE, width: 0.75 } });
+      // 우측 상단 client 이름
+      s.addText(client, { x: 9, y: 0.35, w: 3.8, h: 0.3, fontSize: 9, color: MUTED, align: "right" });
     };
-    topSlide("TOP 商品", ti.rows, "商品");
-    topSlide("TOP キーワード", tk.rows, "キーワード");
+    const addFooter = (s, n, total) => {
+      s.addText([
+        { text: client, options: { color: MUTED, fontSize: 8 } },
+        { text: "  ·  ", options: { color: LINE, fontSize: 8 } },
+        { text: `${n} / ${total}`, options: { color: MUTED, fontSize: 8 } },
+      ], { x: 0.55, y: 7.15, w: 12.23, h: 0.25, align: "right" });
+    };
 
-    // Slide — 曜日別
-    if (wk && wk.weekday) {
-      const s = p.addSlide();
-      s.addText("曜日別パフォーマンス", { x: 0.6, y: 0.4, w: 12, h: 0.5, fontSize: 22, bold: true, color: DARK });
-      s.addShape(p.ShapeType.line, { x: 0.6, y: 0.95, w: 12, h: 0, line: { color: LINE, width: 1 } });
-      const chartData = [{ name: "ROAS", labels: wk.weekday.map(w => w.weekday + "曜"), values: wk.weekday.map(w => w.roas ? Math.round(w.roas * 100) : 0) }];
-      s.addChart(p.ChartType.bar, chartData, { x: 0.6, y: 1.3, w: 12, h: 5.5, barDir: "col",
-        chartColors: [RED], showLegend: false, showValue: true, valAxisTitle: "ROAS (%)" });
+    const slides = [];
+
+    /* ───────────────────────────── ① 表紙 ───────────────────────────── */
+    const s1 = p.addSlide(); slides.push(s1);
+    s1.background = { color: "FFFFFF" };
+    // 좌측 빨간 컬러 블록
+    s1.addShape(p.ShapeType.rect, { x: 0, y: 0, w: 4.5, h: 7.5, fill: { color: RED } });
+    // 좌측: 부제목 (흰 글자)
+    s1.addText(subtitle, { x: 0.55, y: 0.6, w: 3.5, h: 0.5, fontSize: 11, color: "FFFFFF", bold: true, charSpacing: 4, fontFace: "Yu Gothic UI" });
+    s1.addShape(p.ShapeType.line, { x: 0.55, y: 1.05, w: 1.4, h: 0, line: { color: "FFFFFF", width: 1.5 } });
+    // 우측 메인 타이틀
+    s1.addText(client, { x: 5, y: 1.4, w: 7.8, h: 1.8, fontSize: 36, bold: true, color: DARK, lineSpacingMultiple: 1.1, fontFace: "Yu Gothic UI" });
+    // 기간 큰 텍스트
+    s1.addText(`${f.from} 〜 ${f.to}`, { x: 5, y: 3.6, w: 7.8, h: 0.5, fontSize: 18, color: RED, bold: true, fontFace: "SF Mono" });
+    s1.addText([
+      { text: "広告種別\n", options: { color: MUTED, fontSize: 9, charSpacing: 2 } },
+      { text: `${f.product === "ALL" ? "全広告" : f.product}\n\n`, options: { bold: true, fontSize: 14, color: DARK } },
+      { text: "作成日\n", options: { color: MUTED, fontSize: 9, charSpacing: 2 } },
+      { text: `${new Date().toLocaleDateString("ja-JP")}`, options: { bold: true, fontSize: 14, color: DARK } },
+    ], { x: 5, y: 4.4, w: 7.8, h: 2 });
+    // 로고
+    if (logo && logo.startsWith("data:image")) {
+      try { s1.addImage({ data: logo, x: 10.5, y: 6.5, w: 2.3, h: 0.7, sizing: { type: "contain", w: 2.3, h: 0.7 } }); } catch {}
     }
+
+    /* ─────────────────────── ② エグゼクティブ サマリー ─────────────────────── */
+    if (narrative || bullets.length) {
+      const s = p.addSlide(); slides.push(s);
+      addPageHeader(s, "エグゼクティブ サマリー");
+      let y = 1.5;
+      if (narrative) {
+        s.addShape(p.ShapeType.rect, { x: 0.55, y: y, w: 0.08, h: 1.6, fill: { color: RED } });
+        s.addText(narrative, { x: 0.85, y: y, w: 11.9, h: 1.6, fontSize: 14, color: INK, valign: "top", lineSpacingMultiple: 1.4, fontFace: "Yu Gothic UI" });
+        y += 1.85;
+      }
+      if (bullets.length) {
+        s.addText("ハイライト", { x: 0.55, y: y, w: 12, h: 0.4, fontSize: 12, bold: true, color: GRAY, charSpacing: 2 });
+        y += 0.45;
+        bullets.slice(0, 5).forEach(b => {
+          s.addText([
+            { text: "•  ", options: { color: RED, fontSize: 13, bold: true } },
+            { text: b, options: { color: INK, fontSize: 11.5 } },
+          ], { x: 0.7, y: y, w: 12.2, h: 0.35, valign: "top", fontFace: "Yu Gothic UI" });
+          y += 0.4;
+        });
+      }
+    }
+
+    /* ─────────────────────── ③ KPI ハイライト (메트릭 카드 6개) ─────────────────────── */
+    {
+      const s = p.addSlide(); slides.push(s);
+      addPageHeader(s, "KPI ハイライト");
+      const METRICS = [
+        { label: "売上 (GMS)", value: yen(c.gms), delta: dl.gms },
+        { label: "広告費", value: yen(c.ad_cost), delta: dl.ad_cost },
+        { label: "クリック", value: fmtN(c.clicks), delta: dl.clicks },
+        { label: "CV", value: fmtN(c.cv), delta: dl.cv },
+        { label: "ROAS", value: fmtRoasV(c.roas), delta: dl.roas, big: true },
+        { label: "CPC / CPA", value: `${yen(c.cpc)} / ${yen(c.cpa)}`, delta: null },
+      ];
+      // 3 × 2 그리드, 각 카드 4.0 × 2.6
+      const cardW = 4.0, cardH = 2.6, gapX = 0.15, gapY = 0.2, startX = 0.55, startY = 1.45;
+      METRICS.forEach((m, i) => {
+        const col = i % 3, row = Math.floor(i / 3);
+        const x = startX + col * (cardW + gapX);
+        const y = startY + row * (cardH + gapY);
+        // 카드 배경
+        s.addShape(p.ShapeType.roundRect, { x, y, w: cardW, h: cardH, fill: { color: "FFFFFF" }, line: { color: LINE, width: 1 }, rectRadius: 0.08 });
+        // 라벨
+        s.addText(m.label, { x: x + 0.2, y: y + 0.18, w: cardW - 0.4, h: 0.4, fontSize: 10, bold: true, color: GRAY, charSpacing: 2 });
+        // 값
+        s.addText(m.value, { x: x + 0.2, y: y + 0.7, w: cardW - 0.4, h: 1.0, fontSize: m.big ? 38 : 28, bold: true, color: m.big ? RED : DARK, fontFace: "Yu Gothic UI" });
+        // 델타
+        const dp = dPill(m.delta);
+        s.addText(`${dp.text}  ${m.delta == null ? "" : "前期間比"}`,
+                  { x: x + 0.2, y: y + cardH - 0.55, w: cardW - 0.4, h: 0.4, fontSize: 11, bold: true, color: dp.color });
+      });
+    }
+
+    /* ─────────────────────── ④ 売上・広告費 推移 (Line) ─────────────────────── */
+    if (series.series && series.series.length) {
+      const s = p.addSlide(); slides.push(s);
+      addPageHeader(s, "売上・広告費 推移");
+      const labels = series.series.map(r => r.report_date?.slice(5) || "");
+      const data = [
+        { name: "売上", labels, values: series.series.map(r => r.gms || 0) },
+        { name: "広告費", labels, values: series.series.map(r => r.ad_cost || 0) },
+      ];
+      s.addChart(p.ChartType.line, data, {
+        x: 0.55, y: 1.45, w: 12.23, h: 5.5,
+        chartColors: [RED, ACC1],
+        showLegend: true, legendPos: "t", legendFontSize: 11, legendColor: GRAY,
+        catAxisLabelFontSize: 9, valAxisLabelFontSize: 9,
+        catAxisLabelColor: GRAY, valAxisLabelColor: GRAY,
+        lineDataSymbolSize: 5, lineSize: 2.5,
+        showValue: false, valGridLine: { color: LINE, style: "solid" }, catGridLine: { color: "FFFFFF" },
+      });
+    }
+
+    /* ─────────────────────── ⑤ 曜日別 (Combo) ─────────────────────── */
+    if (wk && wk.weekday && wk.weekday.some(w => w.days > 0)) {
+      const s = p.addSlide(); slides.push(s);
+      addPageHeader(s, "曜日別パフォーマンス");
+      const labels = wk.weekday.map(w => w.weekday + "曜");
+      const data = [
+        { name: "売上", labels, values: wk.weekday.map(w => w.gms || 0) },
+        { name: "ROAS (%)", labels, values: wk.weekday.map(w => w.roas ? Math.round(w.roas * 100) : 0) },
+      ];
+      s.addChart(p.ChartType.bar, [data[0]], {
+        x: 0.55, y: 1.45, w: 12.23, h: 5.5,
+        barDir: "col", chartColors: [RED],
+        showLegend: false, showValue: false,
+        catAxisLabelFontSize: 11, valAxisLabelFontSize: 9, catAxisLabelColor: DARK, valAxisLabelColor: GRAY,
+        valGridLine: { color: LINE, style: "solid" },
+      });
+      // ROAS 라인을 텍스트로 우측 상단에 추가 (Pptx combo 제한 회피)
+      const roasText = wk.weekday.map(w => `${w.weekday}: ${w.roas ? Math.round(w.roas * 100) : 0}%`).join("  ");
+      s.addText("ROAS  " + roasText, { x: 0.55, y: 1.18, w: 12.23, h: 0.25, fontSize: 9, color: ACC1, bold: true });
+    }
+
+    /* ─────────────────────── ⑥⑦⑧ TOP 표들 ─────────────────────── */
+    const topSlide = (title, rows, dimLabel) => {
+      if (!rows || !rows.length) return;
+      const s = p.addSlide(); slides.push(s);
+      addPageHeader(s, title);
+      const HDR = [
+        { text: "#", options: { bold: true, fill: { color: BG }, color: GRAY, align: "center", valign: "middle", fontSize: 10 } },
+        { text: dimLabel, options: { bold: true, fill: { color: BG }, color: DARK, valign: "middle", fontSize: 10 } },
+        { text: "売上", options: { bold: true, fill: { color: BG }, color: DARK, align: "right", valign: "middle", fontSize: 10 } },
+        { text: "広告費", options: { bold: true, fill: { color: BG }, color: DARK, align: "right", valign: "middle", fontSize: 10 } },
+        { text: "ROAS", options: { bold: true, fill: { color: BG }, color: DARK, align: "right", valign: "middle", fontSize: 10 } },
+        { text: "CPA", options: { bold: true, fill: { color: BG }, color: DARK, align: "right", valign: "middle", fontSize: 10 } },
+      ];
+      const body = rows.slice(0, 8).map((r, i) => {
+        const roasV = r.roas != null ? Math.round(r.roas * 100) : null;
+        return [
+          { text: String(i + 1), options: { align: "center", color: GRAY, fontSize: 11 } },
+          { text: (r.dimension_key || r.campaign_name || "—").toString().slice(0, 55), options: { color: INK, fontSize: 11, bold: true } },
+          { text: yen(r.gms), options: { align: "right", color: INK, fontSize: 11 } },
+          { text: yen(r.ad_cost), options: { align: "right", color: INK, fontSize: 11 } },
+          { text: roasV == null ? "—" : roasV + "%", options: { align: "right", bold: true, color: roasV >= 200 ? GOOD : (roasV < 100 ? BAD : DARK), fontSize: 11 } },
+          { text: r.cpa ? yen(r.cpa) : "—", options: { align: "right", color: INK, fontSize: 11 } },
+        ];
+      });
+      s.addTable([HDR, ...body], {
+        x: 0.55, y: 1.45, w: 12.23,
+        colW: [0.6, 5.5, 1.7, 1.7, 1.3, 1.43],
+        rowH: 0.42, fontFace: "Yu Gothic UI",
+        border: { type: "solid", pt: 0.5, color: LINE },
+      });
+    };
+    topSlide("TOP キャンペーン", tc.rows || [], "キャンペーン");
+    topSlide("TOP 商品", ti.rows || [], "商品");
+    topSlide("TOP キーワード", tk.rows || [], "キーワード");
+
+    /* ─────────────────────── ⑨ アクション提案 ─────────────────────── */
+    if (actions && actions.length) {
+      const s = p.addSlide(); slides.push(s);
+      addPageHeader(s, "アクション 提案");
+      let y = 1.5;
+      actions.slice(0, 6).forEach((a, i) => {
+        s.addShape(p.ShapeType.roundRect, { x: 0.55, y, w: 0.5, h: 0.5, fill: { color: RED }, line: { color: RED }, rectRadius: 0.08 });
+        s.addText(String(i + 1), { x: 0.55, y, w: 0.5, h: 0.5, fontSize: 14, bold: true, color: "FFFFFF", align: "center", valign: "middle" });
+        s.addText(a, { x: 1.2, y, w: 11.6, h: 0.65, fontSize: 12.5, color: INK, valign: "top", lineSpacingMultiple: 1.35, fontFace: "Yu Gothic UI" });
+        y += 0.8;
+      });
+    }
+
+    /* ─────────────────────── ⑩ 終わり (감사) ─────────────────────── */
+    {
+      const s = p.addSlide(); slides.push(s);
+      s.background = { color: DARK };
+      s.addShape(p.ShapeType.rect, { x: 0, y: 0, w: 13.33, h: 0.18, fill: { color: RED } });
+      s.addText("Thank you.", { x: 0.55, y: 3, w: 12.23, h: 1.2, fontSize: 60, bold: true, color: "FFFFFF", align: "center", fontFace: "Yu Gothic UI" });
+      s.addText(client, { x: 0.55, y: 4.4, w: 12.23, h: 0.5, fontSize: 14, color: MUTED, align: "center", charSpacing: 2 });
+      s.addText(new Date().toLocaleDateString("ja-JP"), { x: 0.55, y: 5.0, w: 12.23, h: 0.4, fontSize: 11, color: MUTED, align: "center" });
+    }
+
+    // 푸터 (표지/감사 제외)
+    slides.forEach((s, i) => {
+      if (i === 0 || i === slides.length - 1) return;
+      addFooter(s, i + 1, slides.length);
+    });
 
     const stamp = new Date().toISOString().slice(0, 10);
     await p.writeFile({ fileName: `report_${stamp}.pptx` });
     toast("PowerPoint を保存しました", "ok");
-  } catch (e) { toast(e.message, true); }
+  } catch (e) {
+    console.error("[exportPptx] failed:", e);
+    toast("PPT 生成失敗: " + (e.message || e), true);
+  }
 }
 async function runReport() {
   const f = readFilters("#rep-filters"), win = f.window || "720h", seg = f.segment || "all";
