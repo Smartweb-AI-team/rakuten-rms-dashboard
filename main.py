@@ -1288,6 +1288,7 @@ def api_auth_config():
         "supabase_url": SUPABASE_URL,
         "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),
         "auth_disabled": AUTH_DISABLED,
+        "admin_email": os.environ.get("ADMIN_EMAIL", ""),
     }
 
 # ----------------------------- Static -----------------------------

@@ -448,8 +448,53 @@ function _fbCurrentUser() {
   if (!tok) return null;
   try {
     const payload = JSON.parse(atob(tok.split(".")[1]));
-    return { id: payload.sub, email: payload.email || "" };
+    const email = payload.email || "";
+    const adminEmail = (AUTH_CFG && AUTH_CFG.admin_email) ? AUTH_CFG.admin_email.toLowerCase() : "";
+    return { id: payload.sub, email, isAdmin: adminEmail && email.toLowerCase() === adminEmail };
   } catch { return null; }
+}
+
+function _fbIsAdminEmail(email) {
+  const adminEmail = (AUTH_CFG && AUTH_CFG.admin_email) ? AUTH_CFG.admin_email.toLowerCase() : "";
+  return adminEmail && (email || "").toLowerCase() === adminEmail;
+}
+
+// 이미지 라이트박스 (새 탭 대신 화면 위 모달)
+function _fbOpenLightbox(srcs, startIdx) {
+  if (!Array.isArray(srcs)) srcs = [srcs];
+  let idx = Math.max(0, Math.min(startIdx || 0, srcs.length - 1));
+  const exist = document.getElementById("fb-lightbox");
+  if (exist) exist.remove();
+  const lb = document.createElement("div");
+  lb.id = "fb-lightbox";
+  lb.className = "fb-lightbox";
+  lb.innerHTML = `
+    <button class="fb-lb-close" title="閉じる (Esc)">✕</button>
+    ${srcs.length > 1 ? `<button class="fb-lb-prev" title="前">‹</button><button class="fb-lb-next" title="次">›</button>` : ""}
+    <div class="fb-lb-stage"><img id="fb-lb-img" src="${srcs[idx]}" alt=""></div>
+    ${srcs.length > 1 ? `<div class="fb-lb-counter">${idx + 1} / ${srcs.length}</div>` : ""}
+  `;
+  document.body.appendChild(lb);
+  const close = () => {
+    lb.remove();
+    document.removeEventListener("keydown", onKey);
+  };
+  const show = (n) => {
+    idx = (n + srcs.length) % srcs.length;
+    document.getElementById("fb-lb-img").src = srcs[idx];
+    const c = lb.querySelector(".fb-lb-counter");
+    if (c) c.textContent = `${idx + 1} / ${srcs.length}`;
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape") close();
+    if (e.key === "ArrowRight") show(idx + 1);
+    if (e.key === "ArrowLeft") show(idx - 1);
+  };
+  lb.querySelector(".fb-lb-close").onclick = close;
+  lb.querySelector(".fb-lb-prev")?.addEventListener("click", (e) => { e.stopPropagation(); show(idx - 1); });
+  lb.querySelector(".fb-lb-next")?.addEventListener("click", (e) => { e.stopPropagation(); show(idx + 1); });
+  lb.addEventListener("click", (e) => { if (e.target === lb) close(); });
+  document.addEventListener("keydown", onKey);
 }
 
 function _fbRelTime(iso) {
@@ -509,8 +554,20 @@ function _fbRenderList() {
     if (q && !(p.title.toLowerCase().includes(q) || (p.body || "").toLowerCase().includes(q))) return false;
     return true;
   });
+  // 정렬: 未対応 먼저 → 그 다음 최신순
+  filtered.sort((a, b) => {
+    const ao = a.status === "open" ? 0 : 1;
+    const bo = b.status === "open" ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    return (b.created_at || "").localeCompare(a.created_at || "");
+  });
   if (!filtered.length) {
-    list.innerHTML = `<div class="fb-empty">投稿がありません</div>`;
+    list.innerHTML = `
+      <div class="fb-empty fb-empty-illus">
+        <div style="font-size:42px;opacity:.5;margin-bottom:8px">📭</div>
+        <div style="font-weight:700;color:#475569;margin-bottom:4px">投稿がありません</div>
+        <div style="font-size:11.5px;color:#94a3b8">右上の「＋ 新規投稿」から最初の質問を投稿してみましょう</div>
+      </div>`;
     return;
   }
   list.innerHTML = filtered.map(p => {
@@ -569,21 +626,25 @@ function _fbRenderDetail(post, replies) {
   const st = FB_STATUS_META[post.status] || FB_STATUS_META.open;
   const me = _fbCurrentUser();
   const isOwn = me && me.id === post.user_id;
+  const isAdmin = me && me.isAdmin;
   const author = (post.user_email || "—").split("@")[0];
-  const attHTML = (post.attachment_paths || []).map(p =>
-    `<a href="${_sbPublicUrl(p)}" target="_blank" class="fb-att-img"><img src="${_sbPublicUrl(p)}" loading="lazy"></a>`).join("");
+  const authorIsAdmin = _fbIsAdminEmail(post.user_email);
+  const _attImg = (path, allPaths) =>
+    `<button type="button" class="fb-att-img" data-src="${_sbPublicUrl(path)}" data-group="${(allPaths || []).map(p => _sbPublicUrl(p)).join('|')}"><img src="${_sbPublicUrl(path)}" loading="lazy"></button>`;
+  const attHTML = (post.attachment_paths || []).map(p => _attImg(p, post.attachment_paths)).join("");
   const repliesHTML = replies.map(r => {
     const rIsOwn = me && me.id === r.user_id;
+    const rIsAdmin = _fbIsAdminEmail(r.user_email);
     const rAuthor = (r.user_email || "—").split("@")[0];
-    const rAtt = (r.attachment_paths || []).map(p =>
-      `<a href="${_sbPublicUrl(p)}" target="_blank" class="fb-att-img"><img src="${_sbPublicUrl(p)}" loading="lazy"></a>`).join("");
+    const rAtt = (r.attachment_paths || []).map(p => _attImg(p, r.attachment_paths)).join("");
     return `
-      <div class="fb-reply${rIsOwn ? ' fb-reply-own' : ''}">
+      <div class="fb-reply${rIsAdmin ? ' fb-reply-admin' : (rIsOwn ? ' fb-reply-own' : '')}">
         <div class="fb-reply-head">
-          <span class="fb-avatar">${escapeHtml(rAuthor.slice(0,2).toUpperCase())}</span>
+          <span class="fb-avatar${rIsAdmin ? ' fb-avatar-admin' : ''}">${escapeHtml(rAuthor.slice(0,2).toUpperCase())}</span>
           <span class="fb-reply-author">${escapeHtml(rAuthor)}</span>
+          ${rIsAdmin ? `<span class="fb-admin-badge">管理者</span>` : ""}
           <span class="fb-reply-time">${_fbRelTime(r.created_at)}</span>
-          ${rIsOwn ? `<button class="fb-reply-del" data-rid="${r.id}" title="削除">✕</button>` : ""}
+          ${(rIsOwn || isAdmin) ? `<button class="fb-reply-del" data-rid="${r.id}" title="削除">✕</button>` : ""}
         </div>
         <div class="fb-reply-body">${escapeHtml(r.body).replace(/\n/g, "<br>")}</div>
         ${rAtt ? `<div class="fb-att-grid">${rAtt}</div>` : ""}
@@ -599,15 +660,16 @@ function _fbRenderDetail(post, replies) {
       </div>
       <h1 class="fb-detail-title">${escapeHtml(post.title)}</h1>
       <div class="fb-detail-meta">
-        <span class="fb-avatar">${escapeHtml(author.slice(0,2).toUpperCase())}</span>
+        <span class="fb-avatar${authorIsAdmin ? ' fb-avatar-admin' : ''}">${escapeHtml(author.slice(0,2).toUpperCase())}</span>
         <span>${escapeHtml(author)}</span>
+        ${authorIsAdmin ? `<span class="fb-admin-badge">管理者</span>` : ""}
         <span>·</span>
         <span>${_fbRelTime(post.created_at)}</span>
-        ${isOwn ? `
+        ${(isOwn || isAdmin) ? `
           <span style="margin-left:auto;display:flex;gap:6px">
-            <button class="fb-status-btn" id="fb-status-toggle">状態 ${st.label}</button>
-            <button class="fb-btn-ghost-sm" id="fb-edit-post">編集</button>
-            <button class="fb-btn-ghost-sm fb-danger" id="fb-delete-post">削除</button>
+            ${isAdmin ? `<button class="fb-status-btn" id="fb-status-toggle">状態 ${st.label}</button>` : ""}
+            ${isOwn ? `<button class="fb-btn-ghost-sm" id="fb-edit-post">編集</button>` : ""}
+            ${(isOwn || isAdmin) ? `<button class="fb-btn-ghost-sm fb-danger" id="fb-delete-post">削除</button>` : ""}
           </span>` : ""}
       </div>
     </div>
@@ -658,15 +720,25 @@ function _fbRenderDetail(post, replies) {
         }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
-      // 状態 자동 전환은 하지 않음 — 글쓴이가 「状態 ○○」 버튼으로 수동 변경
+      // 管理者(= ADMIN_EMAIL) 본인 답변 시에만 자동 「回答済」 전환
+      if (post.status === "open" && me?.isAdmin) {
+        await _sbFetch(`feedback_posts?id=eq.${post.id}`, {
+          method: "PATCH",
+          headers: { "Prefer": "return=minimal" },
+          body: JSON.stringify({ status: "answered" }),
+        }).catch(() => {});
+      }
       toast("返信しました", "ok");
       await _fbReloadList();
       _fbSelectPost(post.id);
     } catch (e) { toast("返信失敗: " + e.message, true); }
   };
 
-  // 본인 글: 삭제 / 편집 / 상태 변경
+  // 권한별 액션: 글쓴이는 편집, 글쓴이 또는 관리자는 삭제, 관리자만 상태 변경
   if (isOwn) {
+    document.getElementById("fb-edit-post").onclick = () => _fbOpenModal(post);
+  }
+  if (isOwn || isAdmin) {
     document.getElementById("fb-delete-post").onclick = async () => {
       if (!confirm("この投稿を削除しますか？")) return;
       try {
@@ -678,7 +750,8 @@ function _fbRenderDetail(post, replies) {
         toast("削除しました", "ok");
       } catch (e) { toast("削除失敗: " + e.message, true); }
     };
-    document.getElementById("fb-edit-post").onclick = () => _fbOpenModal(post);
+  }
+  if (isAdmin) {
     document.getElementById("fb-status-toggle").onclick = async () => {
       const next = { open: "answered", answered: "resolved", resolved: "wont_fix", wont_fix: "open" }[post.status] || "open";
       try {
@@ -692,6 +765,16 @@ function _fbRenderDetail(post, replies) {
       } catch (e) { toast("状態変更失敗: " + e.message, true); }
     };
   }
+
+  // 첨부 이미지 클릭 → lightbox (새 탭 X)
+  detail.querySelectorAll(".fb-att-img").forEach(btn => {
+    btn.onclick = (e) => {
+      e.preventDefault();
+      const group = (btn.dataset.group || "").split("|").filter(Boolean);
+      const idx = group.indexOf(btn.dataset.src);
+      _fbOpenLightbox(group.length ? group : [btn.dataset.src], idx >= 0 ? idx : 0);
+    };
+  });
 
   // 답글 삭제
   detail.querySelectorAll(".fb-reply-del").forEach(b => {
