@@ -648,15 +648,18 @@ $("#btn-backfill").onclick = async () => {
   const fm = $("#bf-from").value, tm = $("#bf-to").value;
   if (!fm || !tm) return toast("開始月／終了月を選択してください", true);
   const from = fm + "-01", to = lastDayOfMonth(tm);
-  const st = await api.get("/api/status").catch(() => null);
-  if (st && !st.session) return toast("セッションが無効です — 拡張機能の「Cookieを送信」を押してから再実行してください", true);
 
   // 확장 설치돼 있으면 → 브라우저 워커 사용 (로컬 속도 + 멀티숍 + 楽天 IP 통과)
   await ensureExt(1500);
   if (EXT_READY) {
-    // 楽天 cookies 에서 추출된 shop_id 우선 (멀티숍). 없으면 config shop_id.
-    return runBackfillViaExtension(from, to, RAKUTEN_SHOP_ID || st?.shop_id);
+    const st = await api.get("/api/status").catch(() => null);
+    const shopId = RAKUTEN_SHOP_ID || st?.shop_id;
+    if (!shopId) return toast("楽天 RMS にログインしていません — RMS広告ページを開いてから再実行してください", true);
+    return runBackfillViaExtension(from, to, shopId);
   }
+  // 폴백 (서버 사이드): 옛 cookie session 필요
+  const st = await api.get("/api/status").catch(() => null);
+  if (st && !st.session) return toast("セッションが無効です — 拡張機能の「Cookieを送信」を押してから再実行してください", true);
   // 폴백 — 서버 백필 (로컬 또는 Cloud Run)
   try {
     const r = await api.post("/api/backfill", { from, to });
@@ -681,56 +684,86 @@ $("#btn-backfill").onclick = async () => {
 };
 $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/cancel", {}); toast("キャンセルを要求しました"); };
 
-// 結果 박스 HTML 생성 (데이터 취득 박스 + 백필 완료 모달 공통)
+// 結果 박스 HTML 생성 (데이터 취득 박스 + 백필 완료 모달 공통).
+// 디자인: Modern SaaS 풍 — Hero 절제, 6개 카드 한 줄 평등 배치, 그룹 칩 라벨, 0 카드는 회색 톤.
 // opts: {from, to, totals, totalRows, ok, failed, elapsed, log}
 function buildCollectResultHTML(opts) {
-  const GROUPS = [
-    { title: "📦 RPP 集計", keys: ["全体広告", "キャンペーン別"] },
-    { title: "📊 RPP 明細", keys: ["商品別", "キーワード別"] },
-    { title: "🎯 その他", keys: ["CPA", "TDA"] },
+  const ALL = [
+    { group: "RPP 集計", key: "全体広告",     short: "全体広告" },
+    { group: "RPP 集計", key: "キャンペーン別", short: "キャンペーン" },
+    { group: "RPP 明細", key: "商品別",       short: "商品別" },
+    { group: "RPP 明細", key: "キーワード別",   short: "キーワード" },
+    { group: "その他",   key: "CPA",         short: "CPA" },
+    { group: "その他",   key: "TDA",         short: "TDA" },
   ];
-  const card = (label, v) => {
-    const zero = !v;
-    return `<div class="cl-card" style="${zero ? 'opacity:.45' : ''}">
-      <div class="cl-l">${escapeHtml(label)}</div>
-      <div class="cl-v" style="${zero ? '' : 'color:#bf0000'}">${fmt(v || 0)}</div>
-    </div>`;
+  const GROUP_COLORS = {
+    "RPP 集計": "#0c7a3e",
+    "RPP 明細": "#1d4ed8",
+    "その他":    "#7d8590",
   };
-  const groupsHTML = GROUPS.map(g => {
-    const cards = g.keys.map(k => card(k, opts.totals[k])).join("");
-    return `<div class="cl-section"><div class="cl-sec-h">${g.title}</div><div class="cl-cards">${cards}</div></div>`;
-  }).join("");
+  const card = (def) => {
+    const v = opts.totals[def.key] || 0;
+    const zero = !v;
+    const valColor = zero ? "#bcc1c7" : "#15181e";
+    const dotColor = zero ? "#e5e7eb" : GROUP_COLORS[def.group];
+    return `
+      <div style="background:#fff;border:1px solid #eef0f2;border-radius:10px;padding:14px 14px 12px;display:flex;flex-direction:column;gap:8px;min-width:0;position:relative;overflow:hidden">
+        <span style="position:absolute;top:0;left:0;width:3px;height:100%;background:${dotColor}"></span>
+        <div style="font-size:10.5px;font-weight:600;color:#7d8590;letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(def.short)}</div>
+        <div style="font-size:26px;font-weight:800;color:${valColor};line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.5px">${fmt(v)}</div>
+        <div style="font-size:9.5px;font-weight:500;color:#9ca3af;letter-spacing:.3px;text-transform:uppercase">${escapeHtml(def.group)}</div>
+      </div>
+    `;
+  };
 
   const logLines = (opts.log || []).slice(-30).reverse();
   const logHtml = logLines.length
     ? logLines.map(l => {
         const isErr = l.includes('失敗') || l.includes('エラー');
-        return `<div style="font-size:11px;font-family:ui-monospace,monospace;padding:3px 7px;border-radius:3px;margin-bottom:2px;${isErr ? 'background:#fff4f4;color:#bf0000' : 'color:#5a6173'}">${escapeHtml(l)}</div>`;
+        return `<div style="font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;padding:4px 8px;border-radius:4px;margin-bottom:1px;${isErr ? 'background:#fef2f2;color:#bf0000;font-weight:600' : 'color:#475569'}">${escapeHtml(l)}</div>`;
       }).join("")
-    : `<div class="muted small">— ログなし</div>`;
+    : `<div style="color:#9ca3af;font-size:12px;padding:8px">— ログなし</div>`;
 
-  const rate = opts.elapsed && opts.totalRows
+  const rate = opts.totalRows && opts.elapsed
     ? Math.round(opts.totalRows / Math.max(1, parseInt(opts.elapsed) || 1))
     : 0;
 
   return `
-    <div class="cl-head" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-      <span class="cl-ok">✅ 取得完了</span>
-      <span class="muted small">${escapeHtml(opts.from)} 〜 ${escapeHtml(opts.to)} ・ ⏱ ${escapeHtml(opts.elapsed)} ・ 成功 ${opts.ok} / 失敗 ${opts.failed}</span>
-    </div>
-    <div style="text-align:center;padding:18px 12px;background:linear-gradient(135deg,#fff5f5 0%,#ffffff 100%);border:1px solid #fed7d7;border-radius:10px;margin-bottom:14px">
-      <div class="muted small" style="margin-bottom:2px">合計取得件数</div>
-      <div style="font-size:36px;font-weight:800;color:#bf0000;line-height:1.1">${fmt(opts.totalRows)}<span style="font-size:14px;color:#7d8590;font-weight:600;margin-left:4px">件</span></div>
-      ${rate ? `<div class="muted small" style="margin-top:4px">平均 約 ${fmt(rate)} 件/秒</div>` : ""}
-    </div>
-    <div class="cl-grid" style="margin-bottom:10px">
-      ${groupsHTML}
-    </div>
-    <details style="margin-top:8px">
-      <summary style="cursor:pointer;font-weight:600;font-size:12.5px;padding:6px 0;user-select:none">📋 取得ログ (最新${logLines.length}件)</summary>
-      <div style="max-height:240px;overflow:auto;background:#fafbfc;border:1px solid #eef0f2;border-radius:6px;padding:6px;margin-top:6px;display:flex;flex-direction:column;gap:1px">
-        ${logHtml}
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding-bottom:14px;border-bottom:1px solid #f0f2f5;margin-bottom:18px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="display:inline-flex;width:22px;height:22px;border-radius:50%;background:#dcfce7;color:#0c7a3e;align-items:center;justify-content:center;font-size:13px;font-weight:800">✓</span>
+        <span style="font-size:14.5px;font-weight:700;color:#15181e">取得完了</span>
       </div>
+      <div style="font-size:11.5px;color:#7d8590;font-variant-numeric:tabular-nums;font-weight:500">
+        ${escapeHtml(opts.from)} 〜 ${escapeHtml(opts.to)} <span style="color:#cbd5e1;margin:0 4px">·</span>
+        ⏱ ${escapeHtml(opts.elapsed)} <span style="color:#cbd5e1;margin:0 4px">·</span>
+        成功 <b style="color:#0c7a3e">${opts.ok}</b> / 失敗 <b style="color:${opts.failed?'#bf0000':'#94a3b8'}">${opts.failed}</b>
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:16px;padding:18px 20px;background:linear-gradient(180deg,#fafbfc 0%,#ffffff 100%);border:1px solid #eef0f2;border-radius:12px;margin-bottom:16px">
+      <div>
+        <div style="font-size:10.5px;color:#7d8590;font-weight:600;letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">合計取得件数</div>
+        <div style="font-size:40px;font-weight:800;color:#15181e;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-1px">${fmt(opts.totalRows)}<span style="font-size:15px;color:#94a3b8;font-weight:600;margin-left:6px">件</span></div>
+      </div>
+      ${rate ? `
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
+        <div style="font-size:10.5px;color:#7d8590;font-weight:600;letter-spacing:.5px;text-transform:uppercase">取得速度</div>
+        <div style="font-size:20px;font-weight:700;color:#15181e;font-variant-numeric:tabular-nums">${fmt(rate)} <span style="font-size:11px;color:#94a3b8;font-weight:600">件/秒</span></div>
+      </div>
+      ` : ""}
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px">
+      ${ALL.map(card).join("")}
+    </div>
+
+    <details>
+      <summary style="cursor:pointer;font-size:12px;font-weight:600;color:#5a6173;padding:8px 4px;user-select:none;list-style:none;display:flex;align-items:center;gap:6px">
+        <span style="display:inline-block;transition:transform .15s">▶</span>
+        取得ログ <span style="color:#9ca3af;font-weight:500">(${logLines.length}件)</span>
+      </summary>
+      <div style="max-height:240px;overflow:auto;background:#fafbfc;border:1px solid #eef0f2;border-radius:8px;padding:8px;margin-top:6px;display:flex;flex-direction:column;gap:1px">${logHtml}</div>
     </details>
   `;
 }
