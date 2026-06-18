@@ -1951,12 +1951,14 @@ function renderCmpPicker() {
   const kindL = scope === "3" ? "商品(SKU)" : (scope === "3+4" ? "商品×キーワード" : "キーワード");
   if (cap) cap.innerHTML = total ? `2期間で広告掲載があった${kindL} <b>${total}件</b>${total > 200 ? "（上位200件を表示）" : "（全件）"}` : "";
   if (!rows.length) { t.innerHTML = `<tr><td>${cmpQ ? "検索結果なし" : "対象データがありません"}</td></tr>`; return; }
-  t.innerHTML = `<thead><tr><th class="col-l">項目</th><th>広告費A</th><th>広告費B</th><th>ROAS A</th><th>ROAS B</th></tr></thead><tbody>` +
+  t.innerHTML = `<thead><tr><th class="col-l">項目</th><th>売上A</th><th>売上B</th><th>広告費A</th><th>広告費B</th><th>ROAS A</th><th>ROAS B</th></tr></thead><tbody>` +
     rows.map(r => {
       const labelText = r.label || r.dim;
       return `<tr class="row-click${cmpTarget === r.dim ? " row-sel" : ""}" data-dim="${r.dim.replace(/"/g, "&quot;")}" data-label="${labelText.replace(/"/g, "&quot;")}">` +
       `<td class="col-l dim-cell" title="${labelText.replace(/"/g, "")}">${cmpTarget === r.dim ? "✓ " : ""}${trunc(labelText, 46)}</td>` +
-      `<td>${fmtMoney(r.a_cost)}</td><td>${fmtMoney(r.b_cost)}</td><td>${fmtRoas(r.a_roas)}</td><td>${fmtRoas(r.b_roas)}</td></tr>`;
+      `<td>${fmtMoney(r.a_gms)}</td><td>${fmtMoney(r.b_gms)}</td>` +
+      `<td>${fmtMoney(r.a_cost)}</td><td>${fmtMoney(r.b_cost)}</td>` +
+      `<td>${fmtRoas(r.a_roas)}</td><td>${fmtRoas(r.b_roas)}</td></tr>`;
     }).join("") + "</tbody>";
   $$("#cmp-picker tbody tr").forEach(tr => tr.onclick = () => {
     const f = readFilters("#cmp-filters");
