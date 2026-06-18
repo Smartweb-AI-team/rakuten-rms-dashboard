@@ -3,8 +3,8 @@
  *
  * 동작:
  *  - 페이지 origin 을 「dashboardServer」 로 자동 저장
- *  - localStorage 의 `sb_access_token` (Supabase JWT) 을 「extensionToken」 으로 저장
- *  - 5초마다 갱신 (JWT 만료 시 대시보드가 자동 refresh 한 새 토큰 따라감)
+ *  - sessionStorage 의 `sb_access_token` (Supabase JWT) 을 「extensionToken」 으로 저장
+ *  - 5초마다 갱신 (대시보드가 401 → refresh 한 새 토큰을 자동으로 따라감)
  *
  * 결과: 멤버는 대시보드 로그인 한 번이면 확장이 알아서 URL/토큰 다 압니다.
  */
@@ -46,7 +46,7 @@
   function syncToExtension() {
     try {
       const url = window.location.origin;
-      const jwt = localStorage.getItem('sb_access_token') || '';
+      const jwt = sessionStorage.getItem('sb_access_token') || '';
       const key = url + '|' + jwt.slice(-20);
       if (key === lastSync) return;
       lastSync = key;
@@ -73,7 +73,5 @@
 
   syncToExtension();
   setInterval(syncToExtension, 5000);
-  window.addEventListener('storage', (e) => {
-    if (e.key === 'sb_access_token') syncToExtension();
-  });
+  // sessionStorage 는 storage 이벤트가 발생하지 않음 → 5초 polling 으로 대응
 })();

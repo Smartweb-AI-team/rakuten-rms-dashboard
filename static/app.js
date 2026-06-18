@@ -157,8 +157,8 @@ async function doLogin() {
       _showLoginError("<b>ログイン応答に access_token がありません</b><br><span style='opacity:.7'>" + escapeHtml(JSON.stringify(j)) + "</span>");
       return;
     }
-    localStorage.setItem("sb_access_token", j.access_token);
-    localStorage.setItem("sb_refresh_token", j.refresh_token || "");
+    sessionStorage.setItem("sb_access_token", j.access_token);
+    sessionStorage.setItem("sb_refresh_token", j.refresh_token || "");
     hideLogin();
     location.reload();
   } catch (e) {
@@ -194,7 +194,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 인증 활성 여부 확인 후 모달 표시 결정
   const cfg = await loadAuthConfig();
   if (cfg.auth_disabled) return; // 로컬 server.py
-  const tok = localStorage.getItem("sb_access_token");
+  const tok = sessionStorage.getItem("sb_access_token");
   if (!tok) showLogin();
 });
 
@@ -203,15 +203,38 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 // 인증 헤더 자동 첨부 (Supabase JWT, 로컬에선 없으면 빈 헤더)
 function _authHeaders() {
-  const tok = localStorage.getItem("sb_access_token");
+  const tok = sessionStorage.getItem("sb_access_token");
   return tok ? { "Authorization": "Bearer " + tok } : {};
 }
-async function _handleAuthError(r) {
-  if (r.status === 401) {
-    localStorage.removeItem("sb_access_token");
-    if (typeof showLogin === "function") showLogin();
-    throw new Error("ログインが必要です");
-  }
+function _clearTokens() {
+  sessionStorage.removeItem("sb_access_token");
+  sessionStorage.removeItem("sb_refresh_token");
+}
+let _refreshInFlight = null;
+async function _tryRefreshToken() {
+  // 동시 호출 합치기 (백필 중 N개 요청이 동시에 401 → refresh 1회만)
+  if (_refreshInFlight) return _refreshInFlight;
+  _refreshInFlight = (async () => {
+    const rt = sessionStorage.getItem("sb_refresh_token");
+    if (!rt) return false;
+    const cfg = await loadAuthConfig();
+    if (!cfg.supabase_url || !cfg.supabase_anon_key) return false;
+    try {
+      const r = await fetch(`${cfg.supabase_url}/auth/v1/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": cfg.supabase_anon_key },
+        body: JSON.stringify({ refresh_token: rt }),
+      });
+      if (!r.ok) return false;
+      const j = await r.json();
+      if (!j.access_token) return false;
+      sessionStorage.setItem("sb_access_token", j.access_token);
+      if (j.refresh_token) sessionStorage.setItem("sb_refresh_token", j.refresh_token);
+      return true;
+    } catch { return false; }
+    finally { setTimeout(() => { _refreshInFlight = null; }, 0); }
+  })();
+  return _refreshInFlight;
 }
 function _stringifyErr(j, status) {
   // FastAPI 422 → {detail: [{loc, msg, type}, ...]} (배열)
@@ -224,23 +247,35 @@ function _stringifyErr(j, status) {
   if (j && j.error) return typeof j.error === "string" ? j.error : JSON.stringify(j.error);
   return "HTTP " + status + " " + JSON.stringify(j);
 }
+async function _doFetch(method, path, body) {
+  const init = { method, headers: { ..._authHeaders() } };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  return fetch(path, init);
+}
+async function _apiRequest(method, path, body) {
+  let r = await _doFetch(method, path, body);
+  if (r.status === 401) {
+    // access token 만료 가능성 → refresh 후 1회 재시도
+    const refreshed = await _tryRefreshToken();
+    if (refreshed) {
+      r = await _doFetch(method, path, body);
+    }
+    if (r.status === 401) {
+      _clearTokens();
+      if (typeof showLogin === "function") showLogin();
+      throw new Error("ログインが必要です");
+    }
+  }
+  let j; try { j = await r.json(); } catch { j = {}; }
+  if (!r.ok) throw new Error(_stringifyErr(j, r.status));
+  return j;
+}
 const api = {
-  async get(path) {
-    const r = await fetch(path, { headers: _authHeaders() });
-    await _handleAuthError(r);
-    let j; try { j = await r.json(); } catch { j = {}; }
-    if (!r.ok) throw new Error(_stringifyErr(j, r.status));
-    return j;
-  },
-  async post(path, body) {
-    const r = await fetch(path, { method: "POST",
-      headers: { "Content-Type": "application/json", ..._authHeaders() },
-      body: JSON.stringify(body || {}) });
-    await _handleAuthError(r);
-    let j; try { j = await r.json(); } catch { j = {}; }
-    if (!r.ok) throw new Error(_stringifyErr(j, r.status));
-    return j;
-  },
+  get(path) { return _apiRequest("GET", path); },
+  post(path, body) { return _apiRequest("POST", path, body || {}); },
 };
 const fmt = n => (n === null || n === undefined) ? "—" : Number(n).toLocaleString("ko-KR");
 let MONEY_UNIT = "yen"; // 'yen' | 'man'(万円)
@@ -615,7 +650,7 @@ $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/
 async function runBackfillViaExtension(from, to, shopId) {
   const cfg = await loadAuthConfig();
   const vercelUrl = window.location.origin;
-  const jwt = localStorage.getItem("sb_access_token") || "";
+  const jwt = sessionStorage.getItem("sb_access_token") || "";
   const taskId = "bf_" + Date.now();
   $("#bf-progress").classList.remove("hidden");
   $("#btn-backfill").disabled = true; $("#btn-refill").disabled = true;
