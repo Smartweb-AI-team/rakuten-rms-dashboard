@@ -506,25 +506,51 @@ function _fbSbClient() {
 
 async function _sbFetch(path, opts = {}) {
   const cfg = await loadAuthConfig();
-  const tok = sessionStorage.getItem("sb_access_token");
-  const headers = {
-    "apikey": cfg.supabase_anon_key,
-    "Authorization": "Bearer " + tok,
-    "Content-Type": "application/json",
-    ...(opts.headers || {}),
+  const doFetch = () => {
+    const tok = sessionStorage.getItem("sb_access_token");
+    const headers = {
+      "apikey": cfg.supabase_anon_key,
+      "Authorization": "Bearer " + tok,
+      "Content-Type": "application/json",
+      ...(opts.headers || {}),
+    };
+    return fetch(`${cfg.supabase_url}/rest/v1/${path}`, { ...opts, headers });
   };
-  return fetch(`${cfg.supabase_url}/rest/v1/${path}`, { ...opts, headers });
+  let r = await doFetch();
+  if (r.status === 401) {
+    // JWT 만료 가능성 → refresh 후 재시도. Realtime 토큰도 갱신.
+    const refreshed = await _tryRefreshToken();
+    if (refreshed) {
+      if (FB_SB) try { FB_SB.realtime.setAuth(sessionStorage.getItem("sb_access_token")); } catch {}
+      r = await doFetch();
+    }
+    if (r.status === 401) {
+      _clearTokens();
+      if (typeof showLogin === "function") showLogin();
+    }
+  }
+  return r;
 }
 async function _sbStorageUpload(file) {
   const cfg = await loadAuthConfig();
-  const tok = sessionStorage.getItem("sb_access_token");
   const ext = (file.name.split(".").pop() || "png").toLowerCase();
   const ts = String(Date.now()).slice(-9);
   const rand = Math.random().toString(36).slice(2, 8);
   const path = `${ts}_${rand}.${ext}`;
-  const r = await fetch(
-    `${cfg.supabase_url}/storage/v1/object/feedback-attachments/${path}`,
-    { method: "POST", headers: { "Authorization": "Bearer " + tok, "Content-Type": file.type || "application/octet-stream" }, body: file });
+  const doUpload = () => {
+    const tok = sessionStorage.getItem("sb_access_token");
+    return fetch(
+      `${cfg.supabase_url}/storage/v1/object/feedback-attachments/${path}`,
+      { method: "POST", headers: { "Authorization": "Bearer " + tok, "Content-Type": file.type || "application/octet-stream" }, body: file });
+  };
+  let r = await doUpload();
+  if (r.status === 401) {
+    const refreshed = await _tryRefreshToken();
+    if (refreshed) {
+      if (FB_SB) try { FB_SB.realtime.setAuth(sessionStorage.getItem("sb_access_token")); } catch {}
+      r = await doUpload();
+    }
+  }
   if (!r.ok) throw new Error(`storage upload ${r.status}`);
   return path;
 }
