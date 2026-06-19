@@ -36,6 +36,10 @@ window.addEventListener('message', (e) => {
       if (prev !== RAKUTEN_SHOP_ID && typeof _autoSyncShopAndReload === "function") {
         _autoSyncShopAndReload();
       }
+      // 새 shop 잡힘 → 자동 저장 시도 (가드: 첫 등록 또는 같은 shop 갱신만 통과)
+      if (prev !== RAKUTEN_SHOP_ID && typeof _saveRakutenCookiesToCloud === "function") {
+        setTimeout(() => _saveRakutenCookiesToCloud().catch(() => {}), 1500);
+      }
     }
     // BACKFILL_PROGRESS 이벤트 처리
     const cbs = _extEventListeners.get(e.data.payload.type) || [];
@@ -261,19 +265,23 @@ async function _saveRakutenCookiesToCloud(opts = {}) {
   if (!r?.ok || !r.cookies || !r.cookies.length) return false;
   const liveShop = r.shopId || null;
   // ── 자동 갱신 안전 가드 ──
+  // 안전 전제: 우리 앱 로그인 직후 _restoreRakutenCookiesFromCloud 가 옛 cookie CLEAR.
+  // 그 후 RAKUTEN_SHOP_ID 가 잡혔다 = 멤버가 본인 楽天 RMS 직접 로그인했음 = 본인 cookie.
+  let isFirstReg = false;
   if (!opts.explicit) {
     if (!liveShop) return false;  // shop 못 잡으면 안 함
     try {
       const ex = await _sbFetch(`member_rakuten_cookies?user_id=eq.${me.id}&select=shop_id`);
       if (!ex.ok) return false;
       const rows = await ex.json();
-      if (!rows.length) {
-        console.log("[cookies] 自動更新スキップ — 初回は手動「📌 楽天連携を保存」必要");
-        return false;
-      }
-      if (String(rows[0].shop_id || "") !== String(liveShop)) {
-        console.log(`[cookies] 自動更新スキップ — shop 不一致 (DB ${rows[0].shop_id} / live ${liveShop})`);
-        return false;
+      if (rows.length) {
+        // 기존 row — 같은 shop 일 때만 갱신
+        if (String(rows[0].shop_id || "") !== String(liveShop)) {
+          console.log(`[cookies] 自動更新スキップ — shop 不一致 (DB ${rows[0].shop_id} / live ${liveShop}) — 別アカウントへの切替は「📌 楽天連携を保存」`);
+          return false;
+        }
+      } else {
+        isFirstReg = true;  // 첫 등록 — 옛 cookie 는 이미 CLEAR 됐으니 안전
       }
     } catch { return false; }
   }
@@ -290,7 +298,10 @@ async function _saveRakutenCookiesToCloud(opts = {}) {
       headers: { "Prefer": "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify(payload),
     });
-    console.log(`[cookies] saved ${r.cookies.length} shop=${liveShop} explicit=${!!opts.explicit}`);
+    console.log(`[cookies] saved ${r.cookies.length} shop=${liveShop} explicit=${!!opts.explicit} firstReg=${isFirstReg}`);
+    if (isFirstReg) {
+      toast(`楽天連携を自動保存しました (shop ${liveShop})`, "ok");
+    }
     return true;
   } catch (e) { console.warn("[cookies] save fail:", e); return false; }
 }
