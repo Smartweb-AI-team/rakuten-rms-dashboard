@@ -242,11 +242,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     location.reload();
   };
 
-  // 로그인된 상태면 본인 楽天 cookies 자동 복원 (페이지 진입 시 1회)
+  // 로그인된 상태면 본인 楽天 cookies 자동 복원 (페이지 진입 시 1회).
+  // 자동 백업은 위험 (다른 사람 cookie 도 본인 row 에 저장될 수 있음) → 수동 버튼만.
   if (tok) {
-    setTimeout(() => _restoreRakutenCookiesFromCloud().catch(() => {}), 2000);
-    // 주기 백업 (1분마다 — cookie 변경 사항 따라잡기)
-    setInterval(() => _saveRakutenCookiesToCloud().catch(() => {}), 60000);
+    setTimeout(() => _restoreRakutenCookiesFromCloud().catch(() => {}), 2500);
   }
 });
 
@@ -273,34 +272,65 @@ async function _saveRakutenCookiesToCloud() {
   } catch (e) { console.warn("[cookies] save fail:", e); }
 }
 
-// 楽天 cookies 복원: Supabase 본인 row 에서 가져옴 → 확장에서 chrome.cookies.set
+// 楽天 cookies 복원: Supabase 본인 row 에서 가져옴 → 확장에서 chrome.cookies.set.
+// 흐름:
+//   - DB 에 본인 cookie 있으면 → 무조건 덮어쓰기 (다른 사람 cookie 가 남아있어도)
+//   - DB 에 없으면 → 안내 토스트
 async function _restoreRakutenCookiesFromCloud() {
   if (!EXT_READY) return;
   const me = _fbCurrentUser ? _fbCurrentUser() : null;
   if (!me) return;
-  // 현재 楽天 로그인 상태면 (RAKUTEN_SHOP_ID 잡힘) 복원 안 함 (덮어쓰기 위험)
-  if (RAKUTEN_SHOP_ID) {
-    console.log("[cookies] 既に楽天ログイン中 — 復元スキップ");
-    return;
-  }
   try {
     const r = await _sbFetch(`member_rakuten_cookies?user_id=eq.${me.id}&select=*`);
     if (!r.ok) return;
     const rows = await r.json();
-    if (!rows.length) {
-      console.log("[cookies] 保存済み cookie なし — 楽天 RMS に手動でログインしてください");
-      toast("楽天 RMS に初回ログインしてください (次回から自動復元されます)", "ok");
+    if (!rows.length || !(rows[0].cookies || []).length) {
+      // 처음 사용 — 楽天 직접 로그인 안내
+      const myShop = RAKUTEN_SHOP_ID || "—";
+      console.log("[cookies] 保存済み cookie なし shop=", myShop);
+      // 다른 사람 cookie 가 남아있으면 먼저 비움
+      if (RAKUTEN_SHOP_ID) {
+        await ext_call({ type: 'CLEAR_RAKUTEN_COOKIES' }).catch(() => {});
+        toast("以前のユーザーの楽天 Cookie をクリアしました — 楽天 RMS にログインしてください", "ok");
+      } else {
+        toast("楽天 RMS にログインしてから「楽天連携を保存」を押してください", "ok");
+      }
       return;
     }
     const data = rows[0];
-    const cookies = data.cookies || [];
-    if (!cookies.length) return;
+    const cookies = data.cookies;
+    // 본인이 이미 같은 shop 으로 로그인 중이면 복원 불필요
+    if (RAKUTEN_SHOP_ID && String(RAKUTEN_SHOP_ID) === String(data.shop_id || "")) {
+      console.log("[cookies] 既に同じ shop でログイン中 — 復元スキップ");
+      return;
+    }
+    // 다른 사람 cookie 가 남아있으면 먼저 비움 (옛 cookie 와 새 cookie 섞이지 않게)
+    await ext_call({ type: 'CLEAR_RAKUTEN_COOKIES' }).catch(() => {});
     const setRes = await ext_call({ type: 'SET_RAKUTEN_COOKIES', cookies });
     console.log("[cookies] restored", setRes);
     toast(`楽天 RMS にログイン状態を復元しました (shop ${data.shop_id || "?"})`, "ok");
-    // 잠시 후 확장이 shop_id 재감지하도록 자극: 楽天 페이지 새 탭 (옵션)
   } catch (e) { console.warn("[cookies] restore fail:", e); }
 }
+
+// 사용자 명시적 호출: 현재 楽天 cookie 를 본인 row 에 저장
+async function saveRakutenLinkExplicit() {
+  if (!EXT_READY) return toast("拡張機能が見つかりません", true);
+  const me = _fbCurrentUser ? _fbCurrentUser() : null;
+  if (!me) return toast("ログインしてください", true);
+  if (!RAKUTEN_SHOP_ID) return toast("先に楽天 RMS にログインしてください", true);
+  if (!confirm(
+    `現在の楽天 RMS ログイン (shop ${RAKUTEN_SHOP_ID}) を ` +
+    `あなた (${me.email}) のアカウントに保存します。\n\n` +
+    `次回ログイン時に自動復元されます。\n\n` +
+    `※ 楽天 アカウント情報を Supabase に保存することになります。続行しますか?`
+  )) return;
+  try {
+    await _saveRakutenCookiesToCloud();
+    toast(`楽天連携を保存しました (shop ${RAKUTEN_SHOP_ID})`, "ok");
+  } catch (e) { toast("保存失敗: " + e.message, true); }
+}
+// 외부 노출 (사이드바 버튼)
+window.saveRakutenLinkExplicit = saveRakutenLinkExplicit;
 
 function _updateMePill() {
   const pill = document.getElementById("me-pill");
