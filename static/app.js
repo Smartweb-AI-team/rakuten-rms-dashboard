@@ -309,7 +309,28 @@ async function _restoreRakutenCookiesFromCloud() {
     const setRes = await ext_call({ type: 'SET_RAKUTEN_COOKIES', cookies });
     console.log("[cookies] restored", setRes);
     toast(`楽天 RMS にログイン状態を復元しました (shop ${data.shop_id || "?"})`, "ok");
+    // 복원 후 shop_id 재감지 + 화면 자동 갱신 (F5 없이)
+    await _refreshAfterRakutenChange();
   } catch (e) { console.warn("[cookies] restore fail:", e); }
+}
+
+// 楽天 cookie 변경 후 (복원 / 자동 전환 등) 우리 앱 측 상태 동기화
+async function _refreshAfterRakutenChange() {
+  try {
+    // 확장에 shop_id 재조회 (RAKUTEN_SHOP_ID 가 변수에 갱신됨)
+    const r = await ext_call({ type: 'GET_RAKUTEN_SHOP_ID' });
+    if (r && r.shopId) {
+      RAKUTEN_SHOP_ID = r.shopId;
+      const pillShop = document.getElementById('pill-shop');
+      if (pillShop) pillShop.textContent = `店舗 ${RAKUTEN_SHOP_ID}`;
+    } else {
+      RAKUTEN_SHOP_ID = null;
+    }
+    if (typeof _updateSessionPill === "function") _updateSessionPill();
+    // config 동기화 + 현재 view 리로드
+    if (typeof _autoSyncShopAndReload === "function") await _autoSyncShopAndReload();
+    else { loadStatus(); loadCoverage(); }
+  } catch (e) { console.warn("[refreshAfterRakuten] fail:", e); }
 }
 
 // 사용자 명시적 호출: 현재 楽天 cookie 를 본인 row 에 저장
@@ -327,6 +348,7 @@ async function saveRakutenLinkExplicit() {
   try {
     await _saveRakutenCookiesToCloud();
     toast(`楽天連携を保存しました (shop ${RAKUTEN_SHOP_ID})`, "ok");
+    await _refreshAfterRakutenChange();
   } catch (e) { toast("保存失敗: " + e.message, true); }
 }
 // 외부 노출 (사이드바 버튼)
