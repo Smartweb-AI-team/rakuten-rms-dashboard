@@ -243,23 +243,45 @@ document.addEventListener("DOMContentLoaded", async () => {
   };
 
   // 로그인된 상태면 본인 楽天 cookies 자동 복원 (페이지 진입 시 1회).
-  // 자동 백업은 위험 (다른 사람 cookie 도 본인 row 에 저장될 수 있음) → 수동 버튼만.
   if (tok) {
     setTimeout(() => _restoreRakutenCookiesFromCloud().catch(() => {}), 2500);
+    // 자동 갱신 (cookie 만료 따라잡기): 30분마다, 안전 가드 적용 (본인 + 같은 shop 만)
+    setInterval(() => _saveRakutenCookiesToCloud().catch(() => {}), 30 * 60 * 1000);
   }
 });
 
-// 楽天 cookies 백업: 확장에서 수집 → Supabase 본인 row 에 upsert
-async function _saveRakutenCookiesToCloud() {
-  if (!EXT_READY) return;
+// 楽天 cookies 백업: 확장에서 수집 → Supabase 본인 row 에 upsert.
+// opts.explicit=true → 명시적 사용자 액션 (가드 X, 다른 shop 도 저장).
+// opts.explicit 없음 → 자동 갱신 (안전 가드: 본인 row 있고 같은 shop 일 때만).
+async function _saveRakutenCookiesToCloud(opts = {}) {
+  if (!EXT_READY) return false;
   const me = _fbCurrentUser ? _fbCurrentUser() : null;
-  if (!me) return;
+  if (!me) return false;
   const r = await ext_call({ type: 'GET_RAKUTEN_COOKIES_FULL' });
-  if (!r?.ok || !r.cookies || !r.cookies.length) return;
+  if (!r?.ok || !r.cookies || !r.cookies.length) return false;
+  const liveShop = r.shopId || null;
+  // ── 자동 갱신 안전 가드 ──
+  if (!opts.explicit) {
+    if (!liveShop) return false;  // shop 못 잡으면 안 함
+    try {
+      const ex = await _sbFetch(`member_rakuten_cookies?user_id=eq.${me.id}&select=shop_id`);
+      if (!ex.ok) return false;
+      const rows = await ex.json();
+      if (!rows.length) {
+        console.log("[cookies] 自動更新スキップ — 初回は手動「📌 楽天連携を保存」必要");
+        return false;
+      }
+      if (String(rows[0].shop_id || "") !== String(liveShop)) {
+        console.log(`[cookies] 自動更新スキップ — shop 不一致 (DB ${rows[0].shop_id} / live ${liveShop})`);
+        return false;
+      }
+    } catch { return false; }
+  }
+  // ── 저장 ──
   const payload = {
     user_id: me.id,
     user_email: me.email,
-    shop_id: r.shopId || null,
+    shop_id: liveShop,
     cookies: r.cookies,
   };
   try {
@@ -268,8 +290,9 @@ async function _saveRakutenCookiesToCloud() {
       headers: { "Prefer": "resolution=merge-duplicates,return=minimal" },
       body: JSON.stringify(payload),
     });
-    console.log("[cookies] saved", r.cookies.length, "shop=", r.shopId);
-  } catch (e) { console.warn("[cookies] save fail:", e); }
+    console.log(`[cookies] saved ${r.cookies.length} shop=${liveShop} explicit=${!!opts.explicit}`);
+    return true;
+  } catch (e) { console.warn("[cookies] save fail:", e); return false; }
 }
 
 // 楽天 cookies 복원: Supabase 본인 row 에서 가져옴 → 확장에서 chrome.cookies.set.
@@ -346,7 +369,7 @@ async function saveRakutenLinkExplicit() {
     `※ 楽天 アカウント情報を Supabase に保存することになります。続行しますか?`
   )) return;
   try {
-    await _saveRakutenCookiesToCloud();
+    await _saveRakutenCookiesToCloud({ explicit: true });
     toast(`楽天連携を保存しました (shop ${RAKUTEN_SHOP_ID})`, "ok");
     await _refreshAfterRakutenChange();
   } catch (e) { toast("保存失敗: " + e.message, true); }
