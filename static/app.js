@@ -26,11 +26,16 @@ window.addEventListener('message', (e) => {
   if (e.data.__rpp_bridge === 'event' && e.data.payload) {
     // 楽天 shop_id 자동 감지 알림
     if (e.data.payload.type === 'RAKUTEN_SHOP_ID' && e.data.payload.shopId) {
+      const prev = RAKUTEN_SHOP_ID;
       RAKUTEN_SHOP_ID = e.data.payload.shopId;
       const pillShop = document.getElementById('pill-shop');
       if (pillShop) pillShop.textContent = `店舗 ${RAKUTEN_SHOP_ID}`;
       console.log('[ext] rakuten shop_id =', RAKUTEN_SHOP_ID);
       if (typeof _updateSessionPill === "function") _updateSessionPill();
+      // 자동 shop 전환: 잡힌 shop ≠ config 면 silent 동기화 + 리로드
+      if (prev !== RAKUTEN_SHOP_ID && typeof _autoSyncShopAndReload === "function") {
+        _autoSyncShopAndReload();
+      }
     }
     // BACKFILL_PROGRESS 이벤트 처리
     const cbs = _extEventListeners.get(e.data.payload.type) || [];
@@ -1371,6 +1376,30 @@ function switchAnalysisSub(s) {
 }
 
 /* ---------------- 상태/세션 ---------------- */
+// 楽天 자동 감지 shop 잡혔을 때 silent 자동 동기화 (페이지 진입 시 호출).
+// 데이터 취득은 ensureShopConsistent() 가 별도 confirm.
+let _shopSyncInflight = false;
+async function _autoSyncShopAndReload() {
+  if (_shopSyncInflight) return;
+  if (!RAKUTEN_SHOP_ID) return;
+  _shopSyncInflight = true;
+  try {
+    const st = await api.get("/api/status").catch(() => null);
+    const cfgShop = (st && st.shop_id) || "";
+    if (String(cfgShop) === String(RAKUTEN_SHOP_ID)) return;
+    await api.post("/api/config", { shop_id: RAKUTEN_SHOP_ID }).catch(() => {});
+    toast(`ショップ ${RAKUTEN_SHOP_ID} に切替えました`, "ok");
+    // 현재 보고 있는 view 만 리로드
+    const cur = $$(".view").find(v => !v.classList.contains("hidden"))?.id?.replace(/^view-/, "");
+    if (cur === "dashboard") loadDashboard();
+    else if (cur === "analysis") loadAnalysisView();
+    else if (cur === "report") loadReportView();
+    else loadStatus();
+  } finally {
+    setTimeout(() => { _shopSyncInflight = false; }, 0);
+  }
+}
+
 // shop 일관성 보장 — 자동 감지 vs config 비교 후 confirm + 자동 전환.
 // 데이터 취득/백필 직전에 호출. 반환값: 실제 사용할 shop_id (null = 중단).
 async function ensureShopConsistent() {
