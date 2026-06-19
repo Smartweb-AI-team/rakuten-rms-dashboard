@@ -164,17 +164,17 @@ def session_ok() -> tuple[bool, str]:
 
 # ----------------------------- Routes -----------------------------
 @app.get("/api/status")
-def api_status(user: dict = Depends(auth_required)):
-    cfg = get_config()
+def api_status(req: Request, user: dict = Depends(auth_required)):
+    shop = _shop_id_from(req)
     db = get_db()
-    bounds = db.date_bounds(cfg.get("shop_id", ""))
-    products = db.products_present(cfg.get("shop_id", ""))
+    bounds = db.date_bounds(shop)
+    products = db.products_present(shop)
     db.close()
     ok, msg = session_ok()
     today = date.today()
     return {
         "session": ok, "session_msg": msg,
-        "shop_id": cfg.get("shop_id", ""),
+        "shop_id": shop,
         "backend": "postgres" if IS_PG else "sqlite",
         "ai_available": False,
         "bounds": bounds,
@@ -327,10 +327,9 @@ async def api_session(req: Request, _u: dict = Depends(auth_session_or_ext)):
             "has_xsrf": "XSRF-TOKEN" in {c["name"] for c in cookies}}
 
 @app.get("/api/coverage")
-def api_coverage(_u: dict = Depends(auth_required)):
-    cfg = get_config()
+def api_coverage(req: Request, _u: dict = Depends(auth_required)):
     db = get_db()
-    cov = db.coverage(cfg.get("shop_id", ""))
+    cov = db.coverage(_shop_id_from(req))
     db.close()
     return {"coverage": cov}
 
@@ -348,6 +347,17 @@ def _parse_common(kw: dict) -> dict:
         "limit":          int(kw.get("limit", 500)),
         "user":           True,  # auth_required 통과한 상태 (라우트가 호출되면)
     }
+
+def _shop_id_from(req: Request, body_shop: str = "") -> str:
+    """멀티 테넌트: query.shop_id 우선, 없으면 body, 마지막으로 config.shop_id.
+    멤버가 본인 楽天 RMS 에서 자동 감지한 shop_id 를 모든 API 호출에 첨부 → 데이터 완전 분리."""
+    try:
+        qs = req.query_params.get("shop_id") or ""
+        if qs: return qs
+    except Exception:
+        pass
+    if body_shop: return body_shop
+    return (get_config() or {}).get("shop_id", "")
 
 def _pct(cur, prev):
     if prev in (None, 0): return None
@@ -491,7 +501,7 @@ def _build_insights(shop_id, date_from, date_to, ad_product, selection_type,
 def api_kpis(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
     cfg = get_config()
-    shop = cfg.get("shop_id", "")
+    shop = _shop_id_from(req)
     return _build_insights(shop, p["from"], p["to"], p["product"], p["selection_type"],
                            cv_window=p["window"], user_segment=p["segment"])
 
@@ -499,7 +509,7 @@ def api_kpis(req: Request, _u: dict = Depends(auth_required)):
 def api_series(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
     cfg = get_config(); db = get_db()
-    r = db.daily_series(cfg.get("shop_id", ""), p["from"], p["to"],
+    r = db.daily_series(_shop_id_from(req), p["from"], p["to"],
                         ad_product=p["product"], selection_type=p["selection_type"],
                         user_segment=p["segment"], cv_window=p["window"])
     db.close()
@@ -510,7 +520,7 @@ def api_top(req: Request, _u: dict = Depends(auth_required)):
     qp = dict(req.query_params)
     p = _parse_common(qp)
     cfg = get_config(); db = get_db()
-    r = db.top_dimensions(cfg.get("shop_id", ""), p["from"], p["to"],
+    r = db.top_dimensions(_shop_id_from(req), p["from"], p["to"],
                           ad_product=p["product"],
                           selection_type=int(qp.get("selection_type", 2)),
                           user_segment=p["segment"], cv_window=p["window"],
@@ -523,7 +533,7 @@ def api_top(req: Request, _u: dict = Depends(auth_required)):
 def api_weekday(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
     cfg = get_config(); db = get_db()
-    rows = db.daily_series(cfg.get("shop_id", ""), p["from"], p["to"],
+    rows = db.daily_series(_shop_id_from(req), p["from"], p["to"],
                            ad_product=p["product"], selection_type=p["selection_type"],
                            user_segment=p["segment"], cv_window=p["window"])
     db.close()
@@ -558,7 +568,7 @@ def api_outliers(req: Request, _u: dict = Depends(auth_required)):
     qp = dict(req.query_params)
     p = _parse_common(qp)
     cfg = get_config(); db = get_db()
-    rows = db.daily_series(cfg.get("shop_id", ""), p["from"], p["to"],
+    rows = db.daily_series(_shop_id_from(req), p["from"], p["to"],
                            ad_product=p["product"], selection_type=p["selection_type"],
                            user_segment=p["segment"], cv_window=p["window"])
     db.close()
@@ -586,7 +596,7 @@ def api_keyword_diff(req: Request, _u: dict = Depends(auth_required)):
     qp = dict(req.query_params)
     p = _parse_common(qp)
     cfg = get_config(); db = get_db()
-    shop = cfg.get("shop_id", "")
+    shop = _shop_id_from(req)
     a_from = qp.get("aFrom", "")
     a_to = qp.get("aTo", "")
     seg, win = p["segment"], p["window"]
@@ -636,7 +646,7 @@ def api_keyword_diff(req: Request, _u: dict = Depends(auth_required)):
 def api_seasonality(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
     cfg = get_config(); db = get_db()
-    shop = cfg.get("shop_id", "")
+    shop = _shop_id_from(req)
     try:
         a = date.fromisoformat(p["from"]); b = date.fromisoformat(p["to"])
     except Exception:
@@ -669,7 +679,7 @@ def api_seasonality(req: Request, _u: dict = Depends(auth_required)):
 def api_item_keywords(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
     cfg = get_config(); db = get_db()
-    shop = cfg.get("shop_id", "")
+    shop = _shop_id_from(req)
     seg, win = p["segment"], p["window"]
     frm, to_ = p["from"], p["to"]
     item_ads, kw_rows = {}, []
@@ -794,7 +804,7 @@ def api_categories(req: Request, _u: dict = Depends(auth_required)):
     """SKU 카테고리 그룹 — config.sku_categories 매핑 기반."""
     p = _parse_common(dict(req.query_params))
     cfg = get_config(); db = get_db()
-    shop = cfg.get("shop_id", "")
+    shop = _shop_id_from(req)
     seg, win = p["segment"], p["window"]
     frm, to_ = p["from"], p["to"]
     manual = cfg.get("sku_categories") or {}
@@ -856,7 +866,7 @@ async def api_categories_auto_suggest(req: Request, _u: dict = Depends(auth_requ
     """키워드 광고비 기반 SKU → 카테고리 자동 추정 (최다 광고비 키워드 = 카테고리)."""
     body = await req.json()
     cfg = get_config(); db = get_db()
-    shop = cfg.get("shop_id", "")
+    shop = _shop_id_from(req)
     frm = body.get("from") or "2000-01-01"
     to_ = body.get("to") or "9999-12-31"
     from db import _ph
@@ -908,7 +918,7 @@ async def api_export(_u: dict = Depends(auth_required)):
 def api_data(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
     cfg = get_config(); db = get_db()
-    rows = db.query_performance(cfg.get("shop_id", ""), p["from"], p["to"],
+    rows = db.query_performance(_shop_id_from(req), p["from"], p["to"],
                                 ad_product=None if p["product"] == "ALL" else p["product"],
                                 selection_type=p["selection_type"],
                                 user_segment=p["segment"], cv_window=p["window"],
@@ -921,7 +931,7 @@ def api_data(req: Request, _u: dict = Depends(auth_required)):
 def api_raw(req: Request, _u: dict = Depends(auth_required)):
     p = _parse_common(dict(req.query_params))
     cfg = get_config(); db = get_db()
-    rows = db.get_raw(cfg.get("shop_id", ""), p["product"], p["from"], p["to"])
+    rows = db.get_raw(_shop_id_from(req), p["product"], p["from"], p["to"])
     db.close()
     fields, seen = ["report_date"], {"report_date"}
     for r in rows:
@@ -1167,7 +1177,7 @@ async def api_backfill(req: Request, bg: BackgroundTasks, _u: dict = Depends(aut
     except Exception:
         raise HTTPException(400, "日付形式が不正です (YYYY-MM-DD)")
     cfg = get_config()
-    shop = cfg.get("shop_id", "")
+    shop = _shop_id_from(req)
     if not shop:
         raise HTTPException(400, "店舗ID未設定")
 
@@ -1233,7 +1243,7 @@ async def api_collect(req: Request, _u: dict = Depends(auth_required)):
     """単日〜短期間(目安7日以内)の取得。Vercelの60秒制約内で完了する範囲のみ。"""
     body = await req.json()
     cfg = get_config()
-    shop = cfg.get("shop_id", "")
+    shop = _shop_id_from(req)
     if not shop:
         raise HTTPException(400, "店舗ID未設定")
     frm = body.get("from") or body.get("date")

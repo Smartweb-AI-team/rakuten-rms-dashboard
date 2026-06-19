@@ -304,13 +304,25 @@ function _stringifyErr(j, status) {
   if (j && j.error) return typeof j.error === "string" ? j.error : JSON.stringify(j.error);
   return "HTTP " + status + " " + JSON.stringify(j);
 }
+function _withShopId(path) {
+  // 楽天 자동 감지된 shop_id 를 모든 /api/ 호출에 자동 첨부 (멀티 테넌트).
+  if (!RAKUTEN_SHOP_ID) return path;
+  if (!path.startsWith("/api/")) return path;
+  if (path.includes("shop_id=")) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return path + sep + "shop_id=" + encodeURIComponent(RAKUTEN_SHOP_ID);
+}
 async function _doFetch(method, path, body) {
   const init = { method, headers: { ..._authHeaders() } };
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
+    // POST body 에도 shop_id 자동 첨부 (서버가 body 로도 받을 수 있게)
+    if (RAKUTEN_SHOP_ID && body && typeof body === "object" && !Array.isArray(body) && !body.shop_id) {
+      body = { ...body, shop_id: RAKUTEN_SHOP_ID };
+    }
     init.body = JSON.stringify(body);
   }
-  return fetch(path, init);
+  return fetch(_withShopId(path), init);
 }
 async function _apiRequest(method, path, body) {
   let r = await _doFetch(method, path, body);
