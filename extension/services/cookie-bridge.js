@@ -96,6 +96,84 @@ async function autoSend(reason) {
   }
 }
 
+// ============================================================
+// 멤버 전환을 위한 楽天 Cookie 저장/복원/삭제 (옛 rpp-bridge-extension 의 utils/cookie.js 이식)
+// ============================================================
+const RAKUTEN_COOKIE_DOMAIN = '.rakuten.co.jp';
+
+// 전체 楽天 cookie 수집 (storeId 포함, 복원 가능 형태)
+export async function collectAllRakutenCookiesFull() {
+  const all = await chrome.cookies.getAll({ domain: RAKUTEN_COOKIE_DOMAIN });
+  const extra = await Promise.all(PATH_URLS.map(url => chrome.cookies.getAll({ url })));
+  // 중복 제거 (name + domain + path 키)
+  const map = new Map();
+  [all, ...extra].flat().forEach(c => {
+    if (!(c.domain || '').includes('rakuten.co.jp')) return;
+    map.set(`${c.name}|${c.domain}|${c.path}`, c);
+  });
+  return Array.from(map.values());
+}
+
+// 전체 楽天 cookie 삭제 (로그아웃 시)
+export async function removeAllRakutenCookies() {
+  const all = await chrome.cookies.getAll({ domain: RAKUTEN_COOKIE_DOMAIN });
+  let removed = 0;
+  for (const c of all) {
+    const dom = c.domain.startsWith('.') ? c.domain.substring(1) : c.domain;
+    const url = `https://${dom}${c.path}`;
+    try {
+      await chrome.cookies.remove({ url, name: c.name });
+      removed++;
+    } catch (e) {
+      console.warn(`[cookie-bridge] 削除失敗 ${c.name}:`, e);
+    }
+  }
+  console.log(`[cookie-bridge] removed ${removed} rakuten cookies`);
+  return removed;
+}
+
+// 단일 cookie 설정 (chrome.cookies.set)
+async function setOneCookie(cookie) {
+  try {
+    const dom = (cookie.domain || '').startsWith('.')
+      ? cookie.domain.substring(1) : cookie.domain;
+    const url = `https://${dom}${cookie.path || '/'}`;
+    const param = {
+      url,
+      name: cookie.name,
+      value: cookie.value,
+      path: cookie.path || '/',
+      secure: cookie.secure !== false,
+      httpOnly: !!cookie.httpOnly,
+      sameSite: 'no_restriction',
+    };
+    if (cookie.storeId) param.storeId = cookie.storeId;
+    if (!cookie.hostOnly && cookie.domain) param.domain = cookie.domain;
+    if (cookie.expirationDate) {
+      const now = Date.now() / 1000;
+      param.expirationDate = cookie.expirationDate > now
+        ? cookie.expirationDate : now + 86400;
+    }
+    await chrome.cookies.set(param);
+    return true;
+  } catch (e) {
+    console.warn(`[cookie-bridge] set失敗 ${cookie.name}:`, e);
+    return false;
+  }
+}
+
+// 다수 cookie 일괄 복원
+export async function setBulkRakutenCookies(cookies) {
+  if (!Array.isArray(cookies) || !cookies.length) return { success: 0, failed: 0 };
+  let success = 0, failed = 0;
+  for (const c of cookies) {
+    if (await setOneCookie(c)) success++;
+    else failed++;
+  }
+  console.log(`[cookie-bridge] restored ${success}/${cookies.length} (failed: ${failed})`);
+  return { success, failed };
+}
+
 export function startAutoSend() {
   // ① 페이지 이동
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {

@@ -6,7 +6,10 @@
  *  - 현재 楽天 로그인 shop_id 자동 추출
  */
 
-import { startAutoSend, sendDashboardCookies } from './services/cookie-bridge.js';
+import {
+  startAutoSend, sendDashboardCookies,
+  collectAllRakutenCookiesFull, removeAllRakutenCookies, setBulkRakutenCookies,
+} from './services/cookie-bridge.js';
 import { runBackfill, getCurrentRakutenShopId } from './services/rakuten-collector.js';
 
 console.log('[bg] Rakuten RMS Analytics 起動 v1.0.0');
@@ -81,6 +84,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     getCurrentRakutenShopId()
       .then(shopId => sendResponse({ shopId }))
       .catch(() => sendResponse({ shopId: null }));
+    return true;
+  }
+
+  // ── 멤버 전환을 위한 楽天 cookie 백업 / 복원 / 삭제 ──
+  if (msg.type === 'GET_RAKUTEN_COOKIES_FULL') {
+    collectAllRakutenCookiesFull()
+      .then(async cookies => {
+        const shopId = await getCurrentRakutenShopId().catch(() => null);
+        sendResponse({ ok: true, cookies, shopId });
+      })
+      .catch(e => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  if (msg.type === 'SET_RAKUTEN_COOKIES') {
+    setBulkRakutenCookies(msg.cookies || [])
+      .then(r => sendResponse({ ok: true, ...r }))
+      .catch(e => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  if (msg.type === 'CLEAR_RAKUTEN_COOKIES') {
+    removeAllRakutenCookies()
+      .then(n => sendResponse({ ok: true, removed: n }))
+      .catch(e => sendResponse({ ok: false, error: String(e) }));
     return true;
   }
 });
