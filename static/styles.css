@@ -130,6 +130,8 @@ code{background:var(--line2);padding:1px 6px;border-radius:6px;font-size:12.5px}
   display:inline-flex;align-items:center;gap:5px}
 .pill.ok{background:var(--good-soft);color:var(--good)}
 .pill.err{background:var(--bad-soft);color:var(--bad)}
+.pill.warn{background:#fef3c7;color:#92400e;border-color:#fde68a;font-weight:700}
+.pill.warn:hover{background:#fde68a}
 .view{padding:26px 28px;display:flex;flex-direction:column;gap:20px;animation:fade .25s ease}
 @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 

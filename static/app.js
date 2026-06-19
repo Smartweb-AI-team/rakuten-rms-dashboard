@@ -1371,11 +1371,64 @@ function switchAnalysisSub(s) {
 }
 
 /* ---------------- 상태/세션 ---------------- */
+// shop 일관성 보장 — 자동 감지 vs config 비교 후 confirm + 자동 전환.
+// 데이터 취득/백필 직전에 호출. 반환값: 실제 사용할 shop_id (null = 중단).
+async function ensureShopConsistent() {
+  const st = await api.get("/api/status").catch(() => null);
+  const cfgShop = (st && st.shop_id) || "";
+  const liveShop = RAKUTEN_SHOP_ID || "";
+  // 楽天 로그인 안 됨
+  if (!liveShop) {
+    toast("楽天 RMS にログインしていません — RMS広告ページを開いてから再実行してください", true);
+    return null;
+  }
+  // config 미설정 (첫 사용)
+  if (!cfgShop) {
+    // 첫 사용 — 조용히 config 등록
+    await api.post("/api/config", { shop_id: liveShop }).catch(() => {});
+    return liveShop;
+  }
+  // 일치 — 그대로 진행
+  if (String(cfgShop) === String(liveShop)) return liveShop;
+  // ⚠ 불일치 — 명시적 confirm + 자동 전환
+  const msg =
+    `⚠ ショップが異なります\n\n` +
+    `現在のダッシュボード表示: shop ${cfgShop}\n` +
+    `現在の楽天ログイン:        shop ${liveShop}\n\n` +
+    `「OK」を押すと:\n` +
+    `  1. データを shop ${liveShop} に保存\n` +
+    `  2. ダッシュボード表示を shop ${liveShop} に自動切替\n\n` +
+    `※ 違うショップに混ざらないよう、楽天で取得対象のショップにログインしてから「OK」を押してください。`;
+  if (!confirm(msg)) return null;
+  // config 갱신 → 화면도 새 shop 으로
+  await api.post("/api/config", { shop_id: liveShop }).catch(() => {});
+  toast(`ショップ ${liveShop} に切替えました`, "ok");
+  // 화면 즉시 반영
+  loadStatus(); loadCoverage();
+  return liveShop;
+}
+
 // セッション 표시 — 브라우저 워커 시대의 진짜 신호 우선 (확장 + 楽天 shop_id).
 // 옛 서버 사이드 cookie 체크 (STATUS.session) 는 sample 폴백 흐름 진단용으로만 의미.
 function _updateSessionPill() {
   const ps = document.getElementById("pill-session");
   if (!ps) return;
+  // shop 불일치 경고 표시
+  const cfgShop = STATUS && STATUS.shop_id;
+  if (EXT_READY && RAKUTEN_SHOP_ID && cfgShop && String(cfgShop) !== String(RAKUTEN_SHOP_ID)) {
+    ps.textContent = `⚠ ショップ不一致 (表示 ${cfgShop} / 楽天 ${RAKUTEN_SHOP_ID})`;
+    ps.className = "pill warn";
+    ps.title = `現在ダッシュボードは shop ${cfgShop} を表示中ですが、楽天は shop ${RAKUTEN_SHOP_ID} にログインしています。データ取得時に切替の確認が表示されます。クリックで切替。`;
+    ps.style.cursor = "pointer";
+    ps.onclick = async () => {
+      if (!confirm(`shop ${RAKUTEN_SHOP_ID} の表示に切替えますか？`)) return;
+      await api.post("/api/config", { shop_id: RAKUTEN_SHOP_ID }).catch(() => {});
+      toast(`ショップ ${RAKUTEN_SHOP_ID} に切替えました`, "ok");
+      loadStatus(); loadCoverage();
+    };
+    return;
+  }
+  ps.onclick = null; ps.style.cursor = "default";
   if (EXT_READY && RAKUTEN_SHOP_ID) {
     ps.textContent = "● 楽天連携 OK";
     ps.className = "pill ok";
@@ -1431,11 +1484,10 @@ $("#btn-collect").onclick = async () => {
   // 확장 워커 우선. 확장 미설치 시에만 옛 서버 사이드 /api/collect 폴백 (로컬 server.py 한정).
   await ensureExt(1500);
   if (EXT_READY) {
-    const st = await api.get("/api/status").catch(() => null);
-    const shopId = RAKUTEN_SHOP_ID || st?.shop_id;
-    if (!shopId) return toast("楽天 RMS にログインしていません — RMS広告ページを開いてから再実行してください", true);
+    const shopId = await ensureShopConsistent();  // 자동 감지 vs config 불일치 시 confirm + 전환
+    if (!shopId) return;
     const box = $("#collect-result"); box.className = "result-box"; box.classList.remove("hidden");
-    box.innerHTML = `<span class="spin"></span>ブラウザワーカーで取得中 (${from} 〜 ${to})…`;
+    box.innerHTML = `<span class="spin"></span>ブラウザワーカーで取得中 (${from} 〜 ${to}) — shop ${shopId}…`;
     $("#btn-collect").disabled = true;
     return runBackfillViaExtension(from, to, shopId, { resultBoxSelector: '#collect-result', label: '取得', standalone: true });
   }
@@ -1604,9 +1656,8 @@ $("#btn-backfill").onclick = async () => {
   // 확장 설치돼 있으면 → 브라우저 워커 사용 (로컬 속도 + 멀티숍 + 楽天 IP 통과)
   await ensureExt(1500);
   if (EXT_READY) {
-    const st = await api.get("/api/status").catch(() => null);
-    const shopId = RAKUTEN_SHOP_ID || st?.shop_id;
-    if (!shopId) return toast("楽天 RMS にログインしていません — RMS広告ページを開いてから再実行してください", true);
+    const shopId = await ensureShopConsistent();
+    if (!shopId) return;
     return runBackfillViaExtension(from, to, shopId);
   }
   // 폴백 (서버 사이드): 옛 cookie session 필요
