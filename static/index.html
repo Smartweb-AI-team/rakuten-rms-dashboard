@@ -396,10 +396,14 @@
         <textarea id="fb-body" rows="8" placeholder="詳細を記入 (再現手順・スクショ etc.)"></textarea>
       </div>
       <div class="fb-field">
-        <label>添付ファイル (画像)</label>
+        <label>添付ファイル</label>
         <div class="fb-drop" id="fb-drop">
-          <span class="fb-drop-text">📎 画像をドラッグ&ドロップ または <u>クリックして選択</u></span>
-          <input type="file" id="fb-file" accept="image/*" multiple hidden />
+          <span class="fb-drop-text">📎 ファイル / 画像 / ZIP をドラッグ&ドロップ または <u>クリックして選択</u></span>
+          <input type="file" id="fb-file" multiple hidden />
+          <input type="file" id="fb-folder" webkitdirectory multiple hidden />
+        </div>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <button type="button" class="fb-btn-ghost-sm" id="fb-pick-folder">📁 フォルダごと選択</button>
         </div>
         <div class="fb-attachments" id="fb-attachments"></div>
       </div>

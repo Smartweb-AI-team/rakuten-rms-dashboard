@@ -1080,8 +1080,19 @@ function _fbRenderDetail(post, replies) {
   const isAdmin = me && me.isAdmin;
   const author = (post.user_email || "—").split("@")[0];
   const authorIsAdmin = _fbIsAdminEmail(post.user_email);
-  const _attImg = (path, allPaths) =>
-    `<button type="button" class="fb-att-img" data-src="${_sbPublicUrl(path)}" data-group="${(allPaths || []).map(p => _sbPublicUrl(p)).join('|')}"><img src="${_sbPublicUrl(path)}" loading="lazy"></button>`;
+  const _attImg = (path, allPaths) => {
+    const url = _sbPublicUrl(path);
+    const name = path.split("/").pop() || "";
+    if (_fbIsImage(name, "")) {
+      return `<button type="button" class="fb-att-img" data-src="${url}" data-group="${(allPaths || []).map(p => _sbPublicUrl(p)).join('|')}"><img src="${url}" loading="lazy"></button>`;
+    }
+    // 이미지 외 = 다운로드 링크 (아이콘 + 파일명)
+    return `<a class="fb-att-file" href="${url}" target="_blank" download="${escapeHtml(name)}">
+      <span style="font-size:22px">${_fbFileIcon(name)}</span>
+      <span class="fb-att-file-name">${escapeHtml(name)}</span>
+      <span class="fb-att-file-dl">↓</span>
+    </a>`;
+  };
   const attHTML = (post.attachment_paths || []).map(p => _attImg(p, post.attachment_paths)).join("");
   const repliesHTML = replies.map(r => {
     const rIsOwn = me && me.id === r.user_id;
@@ -1140,7 +1151,7 @@ function _fbRenderDetail(post, replies) {
       <div class="fb-reply-form">
         <textarea id="fb-reply-body" rows="3" placeholder="返信を書く…"></textarea>
         <div class="fb-reply-form-foot">
-          <input type="file" id="fb-reply-file" accept="image/*" multiple hidden />
+          <input type="file" id="fb-reply-file" multiple hidden />
           <button class="fb-btn-ghost-sm" id="fb-reply-attach">📎 添付</button>
           <span class="fb-reply-att-info" id="fb-reply-att-info"></span>
           <button class="fb-btn-primary fb-btn-sm" id="fb-reply-send">返信</button>
@@ -1210,6 +1221,10 @@ function _fbRenderDetail(post, replies) {
   document.getElementById("fb-reply-file").onchange = async (e) => {
     const info = document.getElementById("fb-reply-att-info");
     for (const f of e.target.files) {
+      if (f.size > FB_MAX_FILE) {
+        toast(`${f.name}: ${Math.round(f.size/1024/1024)}MB 大きすぎます (上限 30MB)`, true);
+        continue;
+      }
       info.textContent = "アップロード中…";
       try {
         const path = await _sbStorageUpload(f);
@@ -1369,8 +1384,12 @@ function _fbBindEvents() {
   });
   const drop = document.getElementById("fb-drop");
   const fileInput = document.getElementById("fb-file");
+  const folderInput = document.getElementById("fb-folder");
   drop.onclick = () => fileInput.click();
   fileInput.onchange = (e) => _fbHandleFiles(e.target.files);
+  if (folderInput) folderInput.onchange = (e) => _fbHandleFiles(e.target.files);
+  const pickFolder = document.getElementById("fb-pick-folder");
+  if (pickFolder) pickFolder.onclick = (e) => { e.preventDefault(); folderInput?.click(); };
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("fb-drop-over"); };
   drop.ondragleave = () => drop.classList.remove("fb-drop-over");
   drop.ondrop = (e) => {
@@ -1419,10 +1438,14 @@ function _fbBindEvents() {
   });
 }
 
+// 파일 크기 상한 (Supabase 무료 50MB / 유료 5GB. 안전 마진 30MB)
+const FB_MAX_FILE = 30 * 1024 * 1024;
 async function _fbHandleFiles(files) {
-  const list = document.getElementById("fb-attachments");
   for (const f of files) {
-    if (!f.type.startsWith("image/")) continue;
+    if (f.size > FB_MAX_FILE) {
+      toast(`${f.name}: ${Math.round(f.size/1024/1024)}MB 大きすぎます (上限 30MB)`, true);
+      continue;
+    }
     const item = { file: f, path: null, status: "uploading" };
     FB_STATE.attachments.push(item);
     _fbRenderAttachments();
@@ -1436,17 +1459,39 @@ async function _fbHandleFiles(files) {
     _fbRenderAttachments();
   }
 }
+function _fbFileIcon(name) {
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  if (["zip","rar","7z","tar","gz"].includes(ext)) return "🗜";
+  if (["pdf"].includes(ext)) return "📄";
+  if (["doc","docx"].includes(ext)) return "📝";
+  if (["xls","xlsx","csv"].includes(ext)) return "📊";
+  if (["ppt","pptx"].includes(ext)) return "📑";
+  if (["mp4","mov","avi","webm"].includes(ext)) return "🎬";
+  if (["mp3","wav","m4a"].includes(ext)) return "🎵";
+  return "📎";
+}
+function _fbIsImage(name, mime) {
+  if (mime && mime.startsWith("image/")) return true;
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  return ["png","jpg","jpeg","gif","webp","bmp","svg"].includes(ext);
+}
 function _fbRenderAttachments() {
   const wrap = document.getElementById("fb-attachments");
-  wrap.innerHTML = FB_STATE.attachments.map((a, i) => `
-    <div class="fb-att-chip">
-      ${a.status === "uploading" ? '<span class="spin"></span>' :
-        a.status === "fail" ? '<span style="color:#bf0000">⚠</span>' :
-        `<img src="${_sbPublicUrl(a.path)}" loading="lazy">`}
-      <span>${escapeHtml(a.file.name)}</span>
+  wrap.innerHTML = FB_STATE.attachments.map((a, i) => {
+    const name = a.file.name || "";
+    const mime = a.file.type || "";
+    const sizeKb = a.file.size ? Math.round(a.file.size / 1024) : null;
+    let preview;
+    if (a.status === "uploading") preview = '<span class="spin"></span>';
+    else if (a.status === "fail") preview = '<span style="color:#bf0000">⚠</span>';
+    else if (_fbIsImage(name, mime)) preview = `<img src="${_sbPublicUrl(a.path)}" loading="lazy">`;
+    else preview = `<span style="font-size:18px">${_fbFileIcon(name)}</span>`;
+    return `<div class="fb-att-chip">
+      ${preview}
+      <span>${escapeHtml(name)}${sizeKb != null ? ` <span style="color:#94a3b8">· ${sizeKb >= 1024 ? (sizeKb/1024).toFixed(1)+"MB" : sizeKb+"KB"}</span>` : ""}</span>
       <button data-i="${i}" class="fb-att-x">✕</button>
-    </div>
-  `).join("");
+    </div>`;
+  }).join("");
   wrap.querySelectorAll(".fb-att-x").forEach(b => {
     b.onclick = () => {
       FB_STATE.attachments.splice(parseInt(b.dataset.i), 1);
