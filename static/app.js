@@ -1569,6 +1569,25 @@ async function _autoSyncShopAndReload() {
   }
 }
 
+// RMS 탭 보장: 없으면 백그라운드 탭으로 열고 잠시 대기 (워커가 즉시 사용 가능하도록).
+async function ensureRakutenTab() {
+  try {
+    const has = await ext_call({ type: 'HAS_RAKUTEN_TAB' });
+    if (has && has.hasTab) return true;
+    // 없으면 백그라운드 탭으로 열기 + 페이지 로딩 대기
+    toast("楽天 RMS タブを開きます…", "ok");
+    await ext_call({ type: 'OPEN_RAKUTEN_TAB' }).catch(() => {
+      window.open("https://ad.rms.rakuten.co.jp/rpp/", "_blank");
+    });
+    // 페이지 로딩 + cookie 감지 대기 (~3초)
+    await new Promise(r => setTimeout(r, 3000));
+    return true;
+  } catch (e) {
+    console.warn("[ensureRakutenTab]", e);
+    return false;
+  }
+}
+
 // shop 일관성 보장 — 자동 감지 vs config 비교 후 confirm + 자동 전환.
 // 데이터 취득/백필 직전에 호출. 반환값: 실제 사용할 shop_id (null = 중단).
 async function ensureShopConsistent() {
@@ -1614,31 +1633,10 @@ function _updateSessionPill() {
   // 멀티테넌트라 「ショップ不一致」 경고 불필요 — 모든 API 가 ?shop_id 자동 첨부됨
   ps.onclick = null; ps.style.cursor = "default";
   if (EXT_READY && RAKUTEN_SHOP_ID) {
-    // 일단 즉시 OK 로 표시 (RAKUTEN_SHOP_ID 잡혔으니 cookie 정상)
+    // cookie / shop_id 잡혔으면 초록 OK (탭 유무는 데이터 취득 시 자동 보장)
     ps.textContent = "● 楽天連携 OK";
     ps.className = "pill ok";
-    ps.title = "拡張機能 + 楽天 RMS セッション正常 — データ取得が可能です";
-    // 비동기로 RMS 탭 존재 확인 → 없으면 warn 으로 변경 + 클릭으로 열기
-    ext_call({ type: 'HAS_RAKUTEN_TAB' }).then(r => {
-      if (r && !r.hasTab) {
-        ps.textContent = "● 楽天 RMS タブを開く";
-        ps.className = "pill warn";
-        ps.style.cursor = "pointer";
-        ps.title = "Cookie は復元済みです — クリックで楽天 RMS タブを開く";
-        ps.onclick = async () => {
-          try {
-            const res = await ext_call({ type: 'OPEN_RAKUTEN_TAB' });
-            if (!res || res.error) throw new Error(res?.error || "no response");
-            toast("楽天 RMS タブを開きました", "ok");
-            setTimeout(() => _refreshAfterRakutenChange(), 2500);
-          } catch (e) {
-            console.error("[open tab] fail:", e);
-            // 폴백: 우리 페이지에서 직접 window.open
-            window.open("https://ad.rms.rakuten.co.jp/rpp/", "_blank");
-          }
-        };
-      }
-    }).catch(() => {});
+    ps.title = "楽天 RMS 連携正常 — データ取得時に必要なら自動でタブを開きます";
     return;
   } else if (EXT_READY && !RAKUTEN_SHOP_ID) {
     ps.textContent = "● 楽天 RMS にログインしてください";
@@ -1691,6 +1689,7 @@ $("#btn-collect").onclick = async () => {
   // 확장 워커 우선. 확장 미설치 시에만 옛 서버 사이드 /api/collect 폴백 (로컬 server.py 한정).
   await ensureExt(1500);
   if (EXT_READY) {
+    await ensureRakutenTab();  // RMS 탭 없으면 자동으로 백그라운드 탭 + 대기
     const shopId = await ensureShopConsistent();  // 자동 감지 vs config 불일치 시 confirm + 전환
     if (!shopId) return;
     const box = $("#collect-result"); box.className = "result-box"; box.classList.remove("hidden");
@@ -1863,6 +1862,7 @@ $("#btn-backfill").onclick = async () => {
   // 확장 설치돼 있으면 → 브라우저 워커 사용 (로컬 속도 + 멀티숍 + 楽天 IP 통과)
   await ensureExt(1500);
   if (EXT_READY) {
+    await ensureRakutenTab();
     const shopId = await ensureShopConsistent();
     if (!shopId) return;
     return runBackfillViaExtension(from, to, shopId);
