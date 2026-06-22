@@ -31,10 +31,17 @@
     });
   });
 
-  // background 의 push (BACKFILL_PROGRESS) → 대시보드로 전달
+  // background 의 push (BACKFILL_PROGRESS / RAKUTEN_COOKIE_CHANGED) → 대시보드로 전달
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg?.type === 'BACKFILL_PROGRESS') {
       window.postMessage({ __rpp_bridge: 'event', payload: msg }, '*');
+    }
+    if (msg?.type === 'RAKUTEN_COOKIE_CHANGED') {
+      // 즉시 shop_id 재조회 + 전달
+      chrome.runtime.sendMessage({ type: 'GET_RAKUTEN_SHOP_ID' }, (resp) => {
+        window.postMessage({ __rpp_bridge: 'event',
+          payload: { type: 'RAKUTEN_SHOP_ID', shopId: resp?.shopId || null } }, '*');
+      });
     }
   });
 

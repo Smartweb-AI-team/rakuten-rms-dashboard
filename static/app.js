@@ -369,6 +369,8 @@ async function _refreshAfterRakutenChange() {
     // config 동기화 + 현재 view 리로드
     if (typeof _autoSyncShopAndReload === "function") await _autoSyncShopAndReload();
     else { loadStatus(); loadCoverage(); }
+    // 우리 앱 측 갱신 완료 후 RMS 탭도 새로고침 (사용자 요구)
+    try { await ext_call({ type: 'RELOAD_RAKUTEN_TABS' }); } catch {}
   } catch (e) { console.warn("[refreshAfterRakuten] fail:", e); }
 }
 
@@ -1626,26 +1628,31 @@ function _updateSessionPill() {
   }
   ps.onclick = null; ps.style.cursor = "default";
   if (EXT_READY && RAKUTEN_SHOP_ID) {
-    // RMS 탭 실제로 열려 있는지 확인 (cookie 만 있으면 「OK」 표시는 오해 — 탭 새로고침 필요)
+    // 일단 즉시 OK 로 표시 (RAKUTEN_SHOP_ID 잡혔으니 cookie 정상)
+    ps.textContent = "● 楽天連携 OK";
+    ps.className = "pill ok";
+    ps.title = "拡張機能 + 楽天 RMS セッション正常 — データ取得が可能です";
+    // 비동기로 RMS 탭 존재 확인 → 없으면 warn 으로 변경 + 클릭으로 열기
     ext_call({ type: 'HAS_RAKUTEN_TAB' }).then(r => {
-      if (r && r.hasTab) {
-        ps.textContent = "● 楽天連携 OK";
-        ps.className = "pill ok";
-        ps.title = "拡張機能 + 楽天 RMS タブ正常 — データ取得が可能です";
-      } else {
-        ps.textContent = "● 楽天 RMS タブを開いてください";
+      if (r && !r.hasTab) {
+        ps.textContent = "● 楽天 RMS タブを開く";
         ps.className = "pill warn";
         ps.style.cursor = "pointer";
-        ps.title = "Cookie は復元済みですが、楽天 RMS タブが開いていません。クリックで開きます。";
+        ps.title = "Cookie は復元済みです — クリックで楽天 RMS タブを開く";
         ps.onclick = async () => {
-          await ext_call({ type: 'OPEN_RAKUTEN_TAB' }).catch(() => {});
-          setTimeout(() => _refreshAfterRakutenChange(), 2000);
+          try {
+            const res = await ext_call({ type: 'OPEN_RAKUTEN_TAB' });
+            if (!res || res.error) throw new Error(res?.error || "no response");
+            toast("楽天 RMS タブを開きました", "ok");
+            setTimeout(() => _refreshAfterRakutenChange(), 2500);
+          } catch (e) {
+            console.error("[open tab] fail:", e);
+            // 폴백: 우리 페이지에서 직접 window.open
+            window.open("https://ad.rms.rakuten.co.jp/rpp/", "_blank");
+          }
         };
       }
-    }).catch(() => {
-      ps.textContent = "● 楽天連携 OK";
-      ps.className = "pill ok";
-    });
+    }).catch(() => {});
     return;
   } else if (EXT_READY && !RAKUTEN_SHOP_ID) {
     ps.textContent = "● 楽天 RMS にログインしてください";

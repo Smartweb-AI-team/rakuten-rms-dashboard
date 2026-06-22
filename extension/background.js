@@ -10,12 +10,14 @@ import {
   startAutoSend, sendDashboardCookies,
   collectAllRakutenCookiesFull, removeAllRakutenCookies, setBulkRakutenCookies,
   reloadAllRakutenTabs, hasRakutenTab, openRakutenTab,
+  startCookieChangeWatcher,
 } from './services/cookie-bridge.js';
 import { runBackfill, getCurrentRakutenShopId } from './services/rakuten-collector.js';
 
 console.log('[bg] Rakuten RMS Analytics 起動 v1.0.0');
 startAutoSend();
-console.log('[bg] 📡 Cookie 自動送信 ON');
+startCookieChangeWatcher();
+console.log('[bg] 📡 Cookie 自動送信 + 変更ウォッチャー ON');
 
 // 백필 진행률 push
 const _backfillProgressByTask = new Map();

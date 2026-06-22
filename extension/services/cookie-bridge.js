@@ -184,18 +184,58 @@ export async function hasRakutenTab() {
   return tabs.length > 0;
 }
 
-// 楽天 RMS RPP 페이지를 백그라운드 탭으로 열기
+// 楽天 RMS RPP 페이지 열기 — 기존 탭 있으면 active + reload, 없으면 새 탭 (active=true)
 export async function openRakutenTab() {
-  const tabs = await chrome.tabs.query({ url: 'https://ad.rms.rakuten.co.jp/*' });
-  if (tabs.length > 0) {
-    await chrome.tabs.reload(tabs[0].id, { bypassCache: true });
-    return tabs[0].id;
+  try {
+    const tabs = await chrome.tabs.query({ url: 'https://ad.rms.rakuten.co.jp/*' });
+    if (tabs.length > 0) {
+      const t = tabs[0];
+      await chrome.tabs.update(t.id, { active: true });
+      if (t.windowId != null) {
+        try { await chrome.windows.update(t.windowId, { focused: true }); } catch {}
+      }
+      await chrome.tabs.reload(t.id, { bypassCache: true });
+      console.log('[cookie-bridge] reused existing RMS tab', t.id);
+      return t.id;
+    }
+    const newTab = await chrome.tabs.create({
+      url: 'https://ad.rms.rakuten.co.jp/rpp/',
+      active: true,
+    });
+    console.log('[cookie-bridge] opened new RMS tab', newTab.id);
+    return newTab.id;
+  } catch (e) {
+    console.error('[cookie-bridge] openRakutenTab failed:', e);
+    throw e;
   }
-  const newTab = await chrome.tabs.create({
-    url: 'https://ad.rms.rakuten.co.jp/rpp/',
-    active: false,
+}
+
+// cookie 변경 감지 → dashboard-bridge 가 polling 으로 가져가지만 즉시 알림하려면 이 함수 사용.
+// chrome.cookies.onChanged 리스너에서 호출 가능.
+let _cookieChangeListenerOn = false;
+export function startCookieChangeWatcher() {
+  if (_cookieChangeListenerOn) return;
+  _cookieChangeListenerOn = true;
+  chrome.cookies.onChanged.addListener((info) => {
+    if (!info.cookie || !info.cookie.domain) return;
+    if (!info.cookie.domain.includes('rakuten.co.jp')) return;
+    // 'shop' cookie 변경 시 = 楽天 로그인/로그아웃/계정 전환 → 모든 RMS 탭에 알림
+    if (info.cookie.name === 'shop' || info.cookie.name === 'XSRF-TOKEN') {
+      console.log(`[cookie-bridge] rakuten cookie ${info.removed ? 'removed' : 'set'}: ${info.cookie.name}`);
+      // background 가 모든 우리 앱 탭에 'cookie-changed' 이벤트 broadcast
+      _broadcastRakutenCookieChange().catch(() => {});
+    }
   });
-  return newTab.id;
+}
+async function _broadcastRakutenCookieChange() {
+  // 모든 우리 앱 탭 (dashboard-bridge 가 로드된) 에 메시지 전송
+  const tabs = await chrome.tabs.query({});
+  for (const t of tabs) {
+    const url = t.url || '';
+    if (url.includes('vercel.app') || url.includes('localhost') || url.includes('127.0.0.1')) {
+      try { await chrome.tabs.sendMessage(t.id, { type: 'RAKUTEN_COOKIE_CHANGED' }); } catch {}
+    }
+  }
 }
 
 // 다수 cookie 일괄 복원
