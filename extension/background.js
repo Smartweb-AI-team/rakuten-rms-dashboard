@@ -9,6 +9,7 @@
 import {
   startAutoSend, sendDashboardCookies,
   collectAllRakutenCookiesFull, removeAllRakutenCookies, setBulkRakutenCookies,
+  reloadAllRakutenTabs, hasRakutenTab, openRakutenTab,
 } from './services/cookie-bridge.js';
 import { runBackfill, getCurrentRakutenShopId } from './services/rakuten-collector.js';
 
@@ -107,6 +108,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     removeAllRakutenCookies()
       .then(n => sendResponse({ ok: true, removed: n }))
       .catch(e => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  if (msg.type === 'RELOAD_RAKUTEN_TABS') {
+    reloadAllRakutenTabs()
+      .then(n => sendResponse({ ok: true, reloaded: n }))
+      .catch(e => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  if (msg.type === 'OPEN_RAKUTEN_TAB') {
+    openRakutenTab()
+      .then(id => sendResponse({ ok: true, tabId: id }))
+      .catch(e => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  if (msg.type === 'HAS_RAKUTEN_TAB') {
+    hasRakutenTab()
+      .then(yes => sendResponse({ ok: true, hasTab: yes }))
+      .catch(() => sendResponse({ ok: true, hasTab: false }));
     return true;
   }
 });

@@ -162,6 +162,42 @@ async function setOneCookie(cookie) {
   }
 }
 
+// 모든 楽天 탭 강제 새로고침 (bypassCache) — cookie 변경 후 화면 갱신용
+export async function reloadAllRakutenTabs() {
+  const tabs = await chrome.tabs.query({ url: '*://*.rakuten.co.jp/*' });
+  let reloaded = 0;
+  for (const tab of tabs) {
+    try {
+      await chrome.tabs.reload(tab.id, { bypassCache: true });
+      reloaded++;
+    } catch (e) {
+      console.warn(`[cookie-bridge] reload失敗 tab ${tab.id}:`, e);
+    }
+  }
+  console.log(`[cookie-bridge] reloaded ${reloaded} rakuten tabs`);
+  return reloaded;
+}
+
+// 楽天 RMS 탭이 1개라도 열려있는지
+export async function hasRakutenTab() {
+  const tabs = await chrome.tabs.query({ url: 'https://ad.rms.rakuten.co.jp/*' });
+  return tabs.length > 0;
+}
+
+// 楽天 RMS RPP 페이지를 백그라운드 탭으로 열기
+export async function openRakutenTab() {
+  const tabs = await chrome.tabs.query({ url: 'https://ad.rms.rakuten.co.jp/*' });
+  if (tabs.length > 0) {
+    await chrome.tabs.reload(tabs[0].id, { bypassCache: true });
+    return tabs[0].id;
+  }
+  const newTab = await chrome.tabs.create({
+    url: 'https://ad.rms.rakuten.co.jp/rpp/',
+    active: false,
+  });
+  return newTab.id;
+}
+
 // 다수 cookie 일괄 복원
 export async function setBulkRakutenCookies(cookies) {
   if (!Array.isArray(cookies) || !cookies.length) return { success: 0, failed: 0 };
