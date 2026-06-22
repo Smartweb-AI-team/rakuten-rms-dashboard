@@ -119,7 +119,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'OPEN_RAKUTEN_TAB') {
-    openRakutenTab()
+    openRakutenTab({ background: !!msg.background })
       .then(id => sendResponse({ ok: true, tabId: id }))
       .catch(e => sendResponse({ ok: false, error: String(e) }));
     return true;

@@ -347,7 +347,7 @@ async function _restoreRakutenCookiesFromCloud() {
     toast(`楽天 RMS にログイン状態を復元しました (shop ${data.shop_id || "?"})`, "ok");
     // 楽天 탭이 열려있으면 새로고침, 없으면 백그라운드 탭으로 열기
     // (cookie 만 set 해도 既存 탭은 옛 화면 그대로 — 새로고침해야 새 로그인 반영)
-    await ext_call({ type: 'OPEN_RAKUTEN_TAB' }).catch(() => {});
+    await ext_call({ type: 'OPEN_RAKUTEN_TAB', background: true }).catch(() => {});
     // 복원 후 shop_id 재감지 + 화면 자동 갱신 (F5 없이)
     await _refreshAfterRakutenChange();
   } catch (e) { console.warn("[cookies] restore fail:", e); }
@@ -1569,17 +1569,16 @@ async function _autoSyncShopAndReload() {
   }
 }
 
-// RMS 탭 보장: 없으면 백그라운드 탭으로 열고 잠시 대기 (워커가 즉시 사용 가능하도록).
+// RMS 탭 보장: 없으면 백그라운드 탭으로 열고 잠시 대기 (사용자 화면 안 빼앗음).
 async function ensureRakutenTab() {
   try {
     const has = await ext_call({ type: 'HAS_RAKUTEN_TAB' });
     if (has && has.hasTab) return true;
-    // 없으면 백그라운드 탭으로 열기 + 페이지 로딩 대기
-    toast("楽天 RMS タブを開きます…", "ok");
-    await ext_call({ type: 'OPEN_RAKUTEN_TAB' }).catch(() => {
-      window.open("https://ad.rms.rakuten.co.jp/rpp/", "_blank");
+    toast("楽天 RMS タブをバックグラウンドで開きます…", "ok");
+    await ext_call({ type: 'OPEN_RAKUTEN_TAB', background: true }).catch(() => {
+      // window.open 폴백은 새 탭 자동 포커스됨 → 사용 안 함, 그냥 실패 처리
+      console.warn("[ensureRakutenTab] OPEN_RAKUTEN_TAB 失敗");
     });
-    // 페이지 로딩 + cookie 감지 대기 (~3초)
     await new Promise(r => setTimeout(r, 3000));
     return true;
   } catch (e) {

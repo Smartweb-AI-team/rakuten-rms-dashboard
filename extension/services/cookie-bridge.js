@@ -184,25 +184,31 @@ export async function hasRakutenTab() {
   return tabs.length > 0;
 }
 
-// 楽天 RMS RPP 페이지 열기 — 기존 탭 있으면 active + reload, 없으면 새 탭 (active=true)
-export async function openRakutenTab() {
+// 楽天 RMS RPP 페이지 열기.
+// opts.background=true → 백그라운드 탭 (사용자 화면 안 빼앗음, 자동 흐름 전용)
+// opts.background=false (기본) → active + window focus (명시적 사용자 클릭 전용)
+export async function openRakutenTab(opts = {}) {
+  const background = !!opts.background;
   try {
     const tabs = await chrome.tabs.query({ url: 'https://ad.rms.rakuten.co.jp/*' });
     if (tabs.length > 0) {
       const t = tabs[0];
-      await chrome.tabs.update(t.id, { active: true });
-      if (t.windowId != null) {
-        try { await chrome.windows.update(t.windowId, { focused: true }); } catch {}
+      if (!background) {
+        await chrome.tabs.update(t.id, { active: true });
+        if (t.windowId != null) {
+          try { await chrome.windows.update(t.windowId, { focused: true }); } catch {}
+        }
       }
+      // reload 자체는 active 상태에 영향 없음
       await chrome.tabs.reload(t.id, { bypassCache: true });
-      console.log('[cookie-bridge] reused existing RMS tab', t.id);
+      console.log(`[cookie-bridge] reused RMS tab ${t.id} (bg=${background})`);
       return t.id;
     }
     const newTab = await chrome.tabs.create({
       url: 'https://ad.rms.rakuten.co.jp/rpp/',
-      active: true,
+      active: !background,
     });
-    console.log('[cookie-bridge] opened new RMS tab', newTab.id);
+    console.log(`[cookie-bridge] opened new RMS tab ${newTab.id} (bg=${background})`);
     return newTab.id;
   } catch (e) {
     console.error('[cookie-bridge] openRakutenTab failed:', e);
