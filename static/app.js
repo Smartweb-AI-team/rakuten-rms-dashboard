@@ -30,13 +30,13 @@ window.addEventListener('message', (e) => {
       RAKUTEN_SHOP_ID = e.data.payload.shopId;
       const pillShop = document.getElementById('pill-shop');
       if (pillShop) pillShop.textContent = `店舗 ${RAKUTEN_SHOP_ID}`;
-      console.log('[ext] rakuten shop_id =', RAKUTEN_SHOP_ID);
+      console.log(`[ext] rakuten shop_id = ${RAKUTEN_SHOP_ID} (prev=${prev})`);
       if (typeof _updateSessionPill === "function") _updateSessionPill();
-      // 자동 shop 전환: 잡힌 shop ≠ config 면 silent 동기화 + 리로드
+      // 새 shop 잡힘 → 화면 일괄 갱신 (멀티테넌트 — config 갱신 불필요, view만 reload)
       if (prev !== RAKUTEN_SHOP_ID && typeof _autoSyncShopAndReload === "function") {
         _autoSyncShopAndReload();
       }
-      // 새 shop 잡힘 → 자동 저장 시도 (가드: 첫 등록 또는 같은 shop 갱신만 통과)
+      // 새 shop 잡힘 → cookie 자동 저장 (가드 통과 시만)
       if (prev !== RAKUTEN_SHOP_ID && typeof _saveRakutenCookiesToCloud === "function") {
         setTimeout(() => _saveRakutenCookiesToCloud().catch(() => {}), 1500);
       }
@@ -1545,25 +1545,25 @@ function switchAnalysisSub(s) {
 }
 
 /* ---------------- 상태/세션 ---------------- */
-// 楽天 자동 감지 shop 잡혔을 때 silent 자동 동기화 (페이지 진입 시 호출).
-// 데이터 취득은 ensureShopConsistent() 가 별도 confirm.
+// 楽天 자동 감지 shop 변경 시 화면 일괄 갱신 (멀티테넌트 — 모든 API 가 ?shop_id 자동 첨부됨).
+// config 갱신 불필요 (멤버별 독립). 화면만 새로 그리면 됨.
 let _shopSyncInflight = false;
 async function _autoSyncShopAndReload() {
   if (_shopSyncInflight) return;
   if (!RAKUTEN_SHOP_ID) return;
   _shopSyncInflight = true;
   try {
-    const st = await api.get("/api/status").catch(() => null);
-    const cfgShop = (st && st.shop_id) || "";
-    if (String(cfgShop) === String(RAKUTEN_SHOP_ID)) return;
-    await api.post("/api/config", { shop_id: RAKUTEN_SHOP_ID }).catch(() => {});
-    toast(`ショップ ${RAKUTEN_SHOP_ID} に切替えました`, "ok");
-    // 현재 보고 있는 view 만 리로드
+    // 우상단 pill 즉시 갱신
+    const pillShop = document.getElementById('pill-shop');
+    if (pillShop) pillShop.textContent = `店舗 ${RAKUTEN_SHOP_ID}`;
+    // 전체 화면 갱신 (status + coverage + 현재 view)
+    await loadStatus();
+    await loadCoverage().catch(() => {});
     const cur = $$(".view").find(v => !v.classList.contains("hidden"))?.id?.replace(/^view-/, "");
     if (cur === "dashboard") loadDashboard();
     else if (cur === "analysis") loadAnalysisView();
     else if (cur === "report") loadReportView();
-    else loadStatus();
+    if (typeof _updateSessionPill === "function") _updateSessionPill();
   } finally {
     setTimeout(() => { _shopSyncInflight = false; }, 0);
   }
@@ -1611,21 +1611,7 @@ async function ensureShopConsistent() {
 function _updateSessionPill() {
   const ps = document.getElementById("pill-session");
   if (!ps) return;
-  // shop 불일치 경고 표시
-  const cfgShop = STATUS && STATUS.shop_id;
-  if (EXT_READY && RAKUTEN_SHOP_ID && cfgShop && String(cfgShop) !== String(RAKUTEN_SHOP_ID)) {
-    ps.textContent = `⚠ ショップ不一致 (表示 ${cfgShop} / 楽天 ${RAKUTEN_SHOP_ID})`;
-    ps.className = "pill warn";
-    ps.title = `現在ダッシュボードは shop ${cfgShop} を表示中ですが、楽天は shop ${RAKUTEN_SHOP_ID} にログインしています。データ取得時に切替の確認が表示されます。クリックで切替。`;
-    ps.style.cursor = "pointer";
-    ps.onclick = async () => {
-      if (!confirm(`shop ${RAKUTEN_SHOP_ID} の表示に切替えますか？`)) return;
-      await api.post("/api/config", { shop_id: RAKUTEN_SHOP_ID }).catch(() => {});
-      toast(`ショップ ${RAKUTEN_SHOP_ID} に切替えました`, "ok");
-      loadStatus(); loadCoverage();
-    };
-    return;
-  }
+  // 멀티테넌트라 「ショップ不一致」 경고 불필요 — 모든 API 가 ?shop_id 자동 첨부됨
   ps.onclick = null; ps.style.cursor = "default";
   if (EXT_READY && RAKUTEN_SHOP_ID) {
     // 일단 즉시 OK 로 표시 (RAKUTEN_SHOP_ID 잡혔으니 cookie 정상)
