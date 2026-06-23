@@ -945,6 +945,30 @@ def api_raw(req: Request, _u: dict = Depends(auth_required)):
 def api_jobs(_u: dict = Depends(auth_required)):
     return {"jobs": [], "counts": {"pending": 0, "registered": 0, "completed": 0, "failed": 0}}
 
+
+@app.post("/api/data/delete")
+async def api_data_delete(req: Request, _u: dict = Depends(auth_required)):
+    """잘못 받은 데이터 삭제 (shop_id + 기간 + 옵션 product).
+    body: {from: 'YYYY-MM-DD', to: 'YYYY-MM-DD', product?: 'RPP'|'TDA'|'CPA', include_raw?: bool}"""
+    body = await req.json()
+    shop = _shop_id_from(req, body.get("shop_id", ""))
+    if not shop:
+        raise HTTPException(400, "shop_id 必須")
+    frm = body.get("from") or ""
+    to_ = body.get("to") or ""
+    if not frm or not to_:
+        raise HTTPException(400, "from / to 必須 (YYYY-MM-DD)")
+    product = body.get("product") or None
+    include_raw = bool(body.get("include_raw", True))
+    db = get_db()
+    try:
+        perf = db.delete_performance_range(shop, frm, to_, product)
+        raw = db.delete_raw_range(shop, frm, to_, product) if include_raw else 0
+        return {"ok": True, "shop_id": shop, "from": frm, "to": to_,
+                "product": product or "ALL", "deleted_performance": perf, "deleted_raw": raw}
+    finally:
+        db.close()
+
 @app.post("/api/backfill/cancel")
 async def api_backfill_cancel(_u: dict = Depends(auth_required)):
     """진행 중/대기 중인 모든 백필 job 을 'cancelled' 로 표시 + 워커에 cancel 신호."""

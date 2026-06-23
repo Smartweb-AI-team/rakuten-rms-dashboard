@@ -123,6 +123,25 @@
         </div>
       </div>
 
+      <div class="card">
+        <h3>🗑 データ削除 <span class="muted small">間違って取得したデータをリセット</span></h3>
+        <p class="muted small">指定した期間の取得済みデータを <b>現在のショップ</b> から削除します。削除後、再取得すると最新データに置き換わります。</p>
+        <div class="field-row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+          <label>開始日 <input type="text" id="del-from" placeholder="YYYY-MM-DD" style="width:140px"></label>
+          <label>終了日 <input type="text" id="del-to" placeholder="YYYY-MM-DD" style="width:140px"></label>
+          <label>広告
+            <select id="del-product" style="padding:6px 10px">
+              <option value="">全広告</option>
+              <option value="RPP">RPP のみ</option>
+              <option value="TDA">TDA のみ</option>
+              <option value="CPA">CPA のみ</option>
+            </select>
+          </label>
+          <button class="ghost-btn fb-danger" id="btn-data-delete" style="background:#fef2f2;border-color:#fecaca;color:#bf0000;font-weight:700">🗑 この期間のデータを削除</button>
+        </div>
+        <div id="del-result" class="small muted" style="margin-top:8px;min-height:18px"></div>
+      </div>
+
     </section>
 
     <!-- ============ ダッシュボードビュー ============ -->

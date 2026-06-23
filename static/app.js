@@ -1938,6 +1938,43 @@ $("#btn-backfill").onclick = async () => {
 };
 $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/cancel", {}); toast("キャンセルを要求しました"); };
 
+// 데이터 삭제 (잘못 받은 데이터 리셋)
+(() => {
+  const delFrom = document.getElementById("del-from");
+  const delTo = document.getElementById("del-to");
+  if (delFrom) attachPicker(delFrom, "day");
+  if (delTo) attachPicker(delTo, "day");
+  const btn = document.getElementById("btn-data-delete");
+  if (!btn) return;
+  btn.onclick = async () => {
+    const from = delFrom?.value?.trim();
+    const to = delTo?.value?.trim();
+    const product = document.getElementById("del-product")?.value || "";
+    const result = document.getElementById("del-result");
+    if (!from || !to) { result.textContent = "⚠ 開始日 / 終了日 を選択してください"; result.style.color = "#bf0000"; return; }
+    const productLabel = product || "全広告";
+    if (!confirm(
+      `本当に削除しますか？\n\n` +
+      `ショップ: ${RAKUTEN_SHOP_ID || '(現在の店舗)'}\n` +
+      `期間: ${from} 〜 ${to}\n` +
+      `広告: ${productLabel}\n\n` +
+      `※ この操作は元に戻せません。削除後 再取得が必要です。`
+    )) return;
+    btn.disabled = true;
+    result.textContent = "削除中…"; result.style.color = "#5a6173";
+    try {
+      const r = await api.post("/api/data/delete", { from, to, product: product || null, include_raw: true });
+      result.innerHTML = `✅ 削除完了 — performance: <b>${r.deleted_performance}</b>行 / raw: <b>${r.deleted_raw}</b>行 (期間 ${r.from} 〜 ${r.to} / ${r.product})`;
+      result.style.color = "#0c7a3e";
+      // 화면 갱신
+      loadStatus(); loadCoverage();
+    } catch (e) {
+      result.textContent = "❌ 削除失敗: " + e.message;
+      result.style.color = "#bf0000";
+    } finally { btn.disabled = false; }
+  };
+})();
+
 // 結果 박스 HTML 생성 (데이터 취득 박스 + 백필 완료 모달 공통).
 // 디자인: Modern SaaS 풍 — Hero 절제, 6개 카드 한 줄 평등 배치, 그룹 칩 라벨, 0 카드는 회색 톤.
 // opts: {from, to, totals, totalRows, ok, failed, elapsed, log}

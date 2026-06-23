@@ -383,6 +383,37 @@ class DB:
                               json.dumps(rows, ensure_ascii=False)))
         return len(rows or [])
 
+    # ---------- 잘못 받은 데이터 삭제 (멤버 본인 shop 한정) ----------
+    def delete_performance_range(self, shop_id: str, date_from: str, date_to: str,
+                                 ad_product: str | None = None) -> int:
+        """ad_daily_performance 에서 shop_id + 기간 + (옵션) ad_product 매칭 row 삭제.
+        반환: 삭제된 row 수."""
+        if not shop_id or not date_from or not date_to:
+            return 0
+        where = [f"shop_id={_ph(1)}", f"report_date BETWEEN {_ph(1)} AND {_ph(1)}"]
+        params = [shop_id, date_from, date_to]
+        if ad_product:
+            where.append(f"ad_product={_ph(1)}")
+            params.append(ad_product)
+        sql = f"DELETE FROM ad_daily_performance WHERE {' AND '.join(where)}"
+        with self.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return cur.rowcount or 0
+
+    def delete_raw_range(self, shop_id: str, date_from: str, date_to: str,
+                         ad_product: str | None = None) -> int:
+        if not shop_id or not date_from or not date_to:
+            return 0
+        where = [f"shop_id={_ph(1)}", f"report_date BETWEEN {_ph(1)} AND {_ph(1)}"]
+        params = [shop_id, date_from, date_to]
+        if ad_product:
+            where.append(f"ad_product={_ph(1)}")
+            params.append(ad_product)
+        sql = f"DELETE FROM ad_daily_raw WHERE {' AND '.join(where)}"
+        with self.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return cur.rowcount or 0
+
     # ---------- 백그라운드 다운로드 작업 큐 ----------
     def add_download_job(self, shop_id: str, selection_type: int,
                          report_type: int, period_type: str,
