@@ -3125,10 +3125,11 @@ function loadMatrixView() {
 }
 async function loadMatrix() {
   const f = readFilters("#mx-filters"), win = f.window || "720h", seg = f.segment || "all";
-  // 전체 합계 띠 — 매트릭스는 商品×KW 통합이라 전체광고(sel=1) 합계
+  // 매트릭스 합계 = sel=4 (キーワード) — 트리의 모든 키워드 행 합과 일치
+  // (楽天 키워드 CSV 합계와도 일치 — 사용자 검증 완료)
   loadAnalysisTotals("#mx-totals", {
-    from: f.from, to: f.to, product: f.product, window: win, segment: seg, selection_type: 1,
-  }, "商品×キーワード 全体").catch(() => {});
+    from: f.from, to: f.to, product: f.product, window: win, segment: seg, selection_type: 4,
+  }, "キーワード合計").catch(() => {});
   // 로딩 스켈레톤 — 매트릭스 카드 5개
   $("#mx-cap").innerHTML = `<span class="skel skel-line skel-inline" style="width:340px;height:14px"></span>`;
   $("#mx-list").innerHTML = Array(5).fill(0).map(() =>
