@@ -2035,28 +2035,21 @@ function renderTotalsBar(target, kpisResp, opts = {}) {
   const tsvValue = CARDS.map(c => c.raw).join("\t");
   const tsvFull = tsvHeader + "\n" + tsvValue;
 
-  wrap.innerHTML = `<div class="totals-bar" title="クリックで全項目をクリップボードにコピー">${CARDS.map(c => `
-    <div class="totals-card ${c.cls}" data-copy="${String(c.raw).replace(/"/g, "&quot;")}" title="クリックで「${escapeHtml(String(c.raw))}」をコピー">
+  wrap.innerHTML = `<div class="totals-bar" title="クリックで全項目を TSV でコピー (Excel に貼り付け可)">${CARDS.map(c => `
+    <div class="totals-card ${c.cls}">
       <span class="tc-bar"></span>
       <div class="tc-l">${escapeHtml(c.l)}</div>
       <div class="tc-v">${c.v}</div>
       ${c.sub ? `<div class="tc-sub">${escapeHtml(c.sub)}</div>` : ""}
     </div>`).join("")}</div>`;
 
-  // 카드 클릭 → 개별 값 카피, 띠 빈 영역 클릭 → 전체 TSV 카피
+  // 어디 클릭하든 전체 TSV 카피
   const bar = wrap.querySelector(".totals-bar");
   if (bar) {
-    bar.addEventListener("click", (e) => {
-      const card = e.target.closest(".totals-card");
-      if (card) {
-        const v = card.getAttribute("data-copy") || "";
-        if (v) {
-          navigator.clipboard.writeText(v).then(() => toast(`コピー: ${v}`, "ok")).catch(() => {});
-        }
-      } else {
-        // 띠 자체 클릭 (카드 사이 여백) = 전체 TSV
-        navigator.clipboard.writeText(tsvFull).then(() => toast("全項目を TSV でコピーしました (Excel に貼り付け可)", "ok")).catch(() => {});
-      }
+    bar.addEventListener("click", () => {
+      navigator.clipboard.writeText(tsvFull)
+        .then(() => toast("全項目を TSV でコピーしました (Excel に貼り付け可)", "ok"))
+        .catch(() => {});
     });
     bar.style.cursor = "pointer";
   }
