@@ -2038,11 +2038,34 @@ function renderTotalsBar(target, kpisResp, opts = {}) {
 }
 
 // 商品×キーワード 各 サブ 탭의 합계 띠 로드
-async function loadAnalysisTotals(target, params, label) {
+// opts.pureMode = true → /api/item_keywords 의 모든 item.pure 합산 (외부 漏出 only)
+async function loadAnalysisTotals(target, params, label, opts = {}) {
   try {
-    const qs = new URLSearchParams(params).toString();
-    const kpis = await api.get(`/api/kpis?${qs}`);
-    renderTotalsBar(target, kpis, { label });
+    if (opts.pureMode) {
+      const qs = new URLSearchParams({
+        from: params.from, to: params.to,
+        product: params.product || "RPP",
+        window: params.window || "720h",
+        segment: params.segment || "all",
+      }).toString();
+      const res = await api.get(`/api/item_keywords?${qs}`);
+      const items = res.items || [];
+      const totals = items.reduce((acc, it) => {
+        const p = it.pure || null;
+        if (!p) return acc;
+        acc.ad_cost   += p.ad_cost   || 0;
+        acc.gms       += p.gms       || 0;
+        acc.clicks    += p.clicks    || 0;
+        acc.cv        += p.cv        || 0;
+        acc.impressions += p.impressions || 0;
+        return acc;
+      }, { ad_cost: 0, gms: 0, clicks: 0, cv: 0, impressions: 0 });
+      renderTotalsBar(target, { current: totals }, { label: "📡 外部漏出 (pure)" });
+    } else {
+      const qs = new URLSearchParams(params).toString();
+      const kpis = await api.get(`/api/kpis?${qs}`);
+      renderTotalsBar(target, kpis, { label });
+    }
   } catch (e) {
     const wrap = typeof target === "string" ? document.querySelector(target) : target;
     if (wrap) wrap.innerHTML = `<div class="totals-empty">合計の取得に失敗しました</div>`;
@@ -2861,10 +2884,11 @@ function _skelTable(rows = 8, cols = 8) {
 }
 async function loadProdBoard() {
   const f = readFilters("#prod-filters"), win = f.window || "720h", seg = f.segment || "all", kind = $("#prod-kind").value;
-  // 전체 합계 띠 (선택된 종류에 맞춰서)
+  const pureMode = $("#prod-pure")?.checked || false;
+  // 전체 합계 띠 (선택된 종류에 맞춰서; 외부 漏出 토글 ON 이면 pure 합계)
   loadAnalysisTotals("#prod-totals", {
     from: f.from, to: f.to, product: f.product, window: win, segment: seg, selection_type: kind,
-  }, kind === "4" ? "キーワード" : "商品(SKU)").catch(() => {});
+  }, kind === "4" ? "キーワード" : "商品(SKU)", { pureMode }).catch(() => {});
   // 로딩 스켈레톤
   if ($("#prod-board")) $("#prod-board").innerHTML = _skelTable(8, 8);
   if ($("#prod-cap")) $("#prod-cap").innerHTML = `<span class="skel skel-line" style="width:280px"></span>`;
@@ -2899,7 +2923,15 @@ $("#prod-kind").onchange = () => {
 };
 $("#prod-clear").onclick = () => { prodSel = []; renderBoard(); renderProdSel(); };
 $("#prod-search").addEventListener("input", e => { pbQ = e.target.value; renderBoard(); });
-$("#prod-pure").addEventListener("change", e => { pbPure = e.target.checked; renderBoard(); });
+$("#prod-pure").addEventListener("change", e => {
+  pbPure = e.target.checked;
+  renderBoard();
+  // 합계 띠도 外部漏出 모드 동기화
+  const f = readFilters("#prod-filters"), win = f.window || "720h", seg = f.segment || "all", kind = $("#prod-kind").value;
+  loadAnalysisTotals("#prod-totals", {
+    from: f.from, to: f.to, product: f.product, window: win, segment: seg, selection_type: kind,
+  }, kind === "4" ? "キーワード" : "商品(SKU)", { pureMode: pbPure }).catch(() => {});
+});
 const BOARD_COLS = [["dim", "項目"], ["gms", "売上"], ["ad_cost", "広告費"], ["impressions", "IMP"], ["clicks", "クリック"], ["ctr", "CTR"], ["cv", "CV"], ["roas", "ROAS"]];
 // 外部漏出 = 商品別広告のうちキーワード経由ではない部分（直接ページ閲覧・推薦・関連等）
 const BOARD_PURE_COLS = [
