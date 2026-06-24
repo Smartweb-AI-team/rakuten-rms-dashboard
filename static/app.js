@@ -3125,13 +3125,11 @@ function loadMatrixView() {
 }
 async function loadMatrix() {
   const f = readFilters("#mx-filters"), win = f.window || "720h", seg = f.segment || "all";
-  // 매트릭스 합계 = sel=3 (商品별 = 楽天 商品 CSV 합계와 일치).
-  // sel=4 는 우리 앱에서 일부 데이터 누락 가능성 있어 표 sum 과 안 맞을 수 있음.
-  // sel=3 은 모든 트래픽 (키워드 + 외부 漏出) 포함 → 매트릭스 트리에 표시되는 부분과는 약간 차이 있지만
-  // 「전체 광고 합계」 의미로는 가장 정확.
+  // 매트릭스 = 商品×キーワード = キーワード 차원 합계 (sel=4)
+  // 楽天 キーワード CSV 합계와 일치해야 함
   loadAnalysisTotals("#mx-totals", {
-    from: f.from, to: f.to, product: f.product, window: win, segment: seg, selection_type: 3,
-  }, "商品合計").catch(() => {});
+    from: f.from, to: f.to, product: f.product, window: win, segment: seg, selection_type: 4,
+  }, "キーワード合計").catch(() => {});
   // 로딩 스켈레톤 — 매트릭스 카드 5개
   $("#mx-cap").innerHTML = `<span class="skel skel-line skel-inline" style="width:340px;height:14px"></span>`;
   $("#mx-list").innerHTML = Array(5).fill(0).map(() =>
