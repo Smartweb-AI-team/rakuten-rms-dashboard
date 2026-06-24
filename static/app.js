@@ -2016,25 +2016,50 @@ function renderTotalsBar(target, kpisResp, opts = {}) {
   const cpc = (cur.clicks && cur.ad_cost != null) ? cur.ad_cost / cur.clicks : (cur.cpc ?? null);
   const cpa = (cur.cv && cur.ad_cost != null) ? cur.ad_cost / cur.cv : (cur.cpa ?? null);
 
+  // 사용자 지정 순서: 表示回数 / CT / CTR / CPC / 費用 / CV数 / CV率 / CV単価 / 売上 / ROAS
+  // (期間, 利益 제외)
   const CARDS = [
-    { cls: "t-money",   l: "売上 (GMS)", v: fmtMoney(cur.gms),                    sub: opts.label || "" },
-    { cls: "t-money",   l: "広告費",     v: fmtMoney(cur.ad_cost),                sub: "" },
-    { cls: "t-traffic", l: "IMP",       v: fmt(cur.impressions),                 sub: "" },
-    { cls: "t-traffic", l: "クリック",   v: fmt(cur.clicks),                      sub: "" },
-    { cls: "t-cv",      l: "CV",        v: fmt(cur.cv),                          sub: "" },
-    { cls: "t-ratio",   l: "ROAS",      v: roas != null ? fmtRoas(roas) : "—",   sub: "" },
-    { cls: "t-ratio",   l: "CTR",       v: ctr != null ? fmtPct(ctr) : "—",      sub: "" },
-    { cls: "t-ratio",   l: "CVR",       v: cvr != null ? fmtPct(cvr) : "—",      sub: "" },
-    { cls: "t-ratio",   l: "CPC",       v: cpc != null ? fmtMoney(cpc) : "—",    sub: "" },
-    { cls: "t-ratio",   l: "CPA",       v: cpa != null ? fmtMoney(cpa) : "—",    sub: "" },
+    { cls: "t-traffic", l: "表示回数", v: fmt(cur.impressions),                 raw: cur.impressions ?? "" },
+    { cls: "t-traffic", l: "CT",      v: fmt(cur.clicks),                       raw: cur.clicks ?? "" },
+    { cls: "t-ratio",   l: "CTR",     v: ctr != null ? fmtPct(ctr) : "—",       raw: ctr != null ? (ctr * 100).toFixed(2) + "%" : "" },
+    { cls: "t-ratio",   l: "CPC",     v: cpc != null ? fmtMoney(cpc) : "—",     raw: cpc != null ? Math.round(cpc) : "" },
+    { cls: "t-money",   l: "費用",     v: fmtMoney(cur.ad_cost),                raw: Math.round(cur.ad_cost || 0) },
+    { cls: "t-cv",      l: "CV数",    v: fmt(cur.cv),                           raw: cur.cv ?? "" },
+    { cls: "t-ratio",   l: "CV率",    v: cvr != null ? fmtPct(cvr) : "—",       raw: cvr != null ? (cvr * 100).toFixed(2) + "%" : "" },
+    { cls: "t-ratio",   l: "CV単価",   v: cpa != null ? fmtMoney(cpa) : "—",     raw: cpa != null ? Math.round(cpa) : "" },
+    { cls: "t-money",   l: "売上",     v: fmtMoney(cur.gms),                    raw: Math.round(cur.gms || 0), sub: opts.label || "" },
+    { cls: "t-ratio",   l: "ROAS",    v: roas != null ? fmtRoas(roas) : "—",    raw: roas != null ? Math.round(roas * 100) + "%" : "" },
   ];
-  wrap.innerHTML = `<div class="totals-bar">${CARDS.map(c => `
-    <div class="totals-card ${c.cls}">
+  // TSV 형식 (헤더 1줄 + 값 1줄) — 엑셀 / 스프레드시트 호환
+  const tsvHeader = CARDS.map(c => c.l).join("\t");
+  const tsvValue = CARDS.map(c => c.raw).join("\t");
+  const tsvFull = tsvHeader + "\n" + tsvValue;
+
+  wrap.innerHTML = `<div class="totals-bar" title="クリックで全項目をクリップボードにコピー">${CARDS.map(c => `
+    <div class="totals-card ${c.cls}" data-copy="${String(c.raw).replace(/"/g, "&quot;")}" title="クリックで「${escapeHtml(String(c.raw))}」をコピー">
       <span class="tc-bar"></span>
       <div class="tc-l">${escapeHtml(c.l)}</div>
       <div class="tc-v">${c.v}</div>
       ${c.sub ? `<div class="tc-sub">${escapeHtml(c.sub)}</div>` : ""}
     </div>`).join("")}</div>`;
+
+  // 카드 클릭 → 개별 값 카피, 띠 빈 영역 클릭 → 전체 TSV 카피
+  const bar = wrap.querySelector(".totals-bar");
+  if (bar) {
+    bar.addEventListener("click", (e) => {
+      const card = e.target.closest(".totals-card");
+      if (card) {
+        const v = card.getAttribute("data-copy") || "";
+        if (v) {
+          navigator.clipboard.writeText(v).then(() => toast(`コピー: ${v}`, "ok")).catch(() => {});
+        }
+      } else {
+        // 띠 자체 클릭 (카드 사이 여백) = 전체 TSV
+        navigator.clipboard.writeText(tsvFull).then(() => toast("全項目を TSV でコピーしました (Excel に貼り付け可)", "ok")).catch(() => {});
+      }
+    });
+    bar.style.cursor = "pointer";
+  }
 }
 
 // 商品×キーワード 各 サブ 탭의 합계 띠 로드
