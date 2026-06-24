@@ -2030,12 +2030,10 @@ function renderTotalsBar(target, kpisResp, opts = {}) {
     { cls: "t-money",   l: "売上",     v: fmtMoney(cur.gms),                    raw: Math.round(cur.gms || 0), sub: opts.label || "" },
     { cls: "t-ratio",   l: "ROAS",    v: roas != null ? fmtRoas(roas) : "—",    raw: roas != null ? Math.round(roas * 100) + "%" : "" },
   ];
-  // TSV 형식 (헤더 1줄 + 값 1줄) — 엑셀 / 스프레드시트 호환
-  const tsvHeader = CARDS.map(c => c.l).join("\t");
-  const tsvValue = CARDS.map(c => c.raw).join("\t");
-  const tsvFull = tsvHeader + "\n" + tsvValue;
+  // TSV 형식 — 값만 한 줄 (헤더 없음, 엑셀 한 행에 그대로 붙여넣기)
+  const tsvFull = CARDS.map(c => c.raw).join("\t");
 
-  wrap.innerHTML = `<div class="totals-bar" title="クリックで全項目を TSV でコピー (Excel に貼り付け可)">${CARDS.map(c => `
+  wrap.innerHTML = `<div class="totals-bar" title="クリックで数値をコピー (Excel に貼り付け可)">${CARDS.map(c => `
     <div class="totals-card ${c.cls}">
       <span class="tc-bar"></span>
       <div class="tc-l">${escapeHtml(c.l)}</div>
@@ -2048,7 +2046,7 @@ function renderTotalsBar(target, kpisResp, opts = {}) {
   if (bar) {
     bar.addEventListener("click", () => {
       navigator.clipboard.writeText(tsvFull)
-        .then(() => toast("全項目を TSV でコピーしました (Excel に貼り付け可)", "ok"))
+        .then(() => toast("数値をコピーしました (Excel に貼り付け可)", "ok"))
         .catch(() => {});
     });
     bar.style.cursor = "pointer";
