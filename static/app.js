@@ -2910,12 +2910,16 @@ function _skelTable(rows = 8, cols = 8) {
 async function loadProdBoard() {
   const f = readFilters("#prod-filters"), win = f.window || "720h", seg = f.segment || "all", kind = $("#prod-kind").value;
   const pureMode = $("#prod-pure")?.checked || false;
-  // 합계 띠는 항상 sel=1 (전체광고) — 楽天 자체 集計値 = 어디서나 일관된 합계
-  // (sel=4 키워드별 합계는 외부 漏出 빠져서 < sel=1)
+  // 합계는 표와 같은 차원으로 (표 sum 과 일치하는 게 자연스러움)
+  // sel=3 (상품) → 全광고와 거의 동일
+  // sel=4 (키워드) → 외부 漏出 빠진 키워드 합산 (라벨에 명시)
+  const label = pureMode ? "📡 外部漏出 only"
+              : kind === "4" ? "キーワード合計 (外部漏出を除く)"
+              : "商品合計";
   loadAnalysisTotals("#prod-totals", {
     from: f.from, to: f.to, product: f.product, window: win, segment: seg,
-    selection_type: 1,
-  }, pureMode ? "外部漏出 only" : "全広告 (期間合計)", { pureMode }).catch(() => {});
+    selection_type: kind,
+  }, label, { pureMode }).catch(() => {});
   // 로딩 스켈레톤
   if ($("#prod-board")) $("#prod-board").innerHTML = _skelTable(8, 8);
   if ($("#prod-cap")) $("#prod-cap").innerHTML = `<span class="skel skel-line" style="width:280px"></span>`;
@@ -2953,12 +2957,15 @@ $("#prod-search").addEventListener("input", e => { pbQ = e.target.value; renderB
 $("#prod-pure").addEventListener("change", e => {
   pbPure = e.target.checked;
   renderBoard();
-  // 합계 띠도 外部漏出 모드 동기화 (합계 자체는 항상 sel=1 = 전체광고)
-  const f = readFilters("#prod-filters"), win = f.window || "720h", seg = f.segment || "all";
+  // 합계 띠도 表와 같은 차원으로 + 外部漏出 모드 동기화
+  const f = readFilters("#prod-filters"), win = f.window || "720h", seg = f.segment || "all", kind = $("#prod-kind").value;
+  const label = pbPure ? "📡 外部漏出 only"
+              : kind === "4" ? "キーワード合計 (外部漏出を除く)"
+              : "商品合計";
   loadAnalysisTotals("#prod-totals", {
     from: f.from, to: f.to, product: f.product, window: win, segment: seg,
-    selection_type: 1,
-  }, pbPure ? "外部漏出 only" : "全広告 (期間合計)", { pureMode: pbPure }).catch(() => {});
+    selection_type: kind,
+  }, label, { pureMode: pbPure }).catch(() => {});
 });
 const BOARD_COLS = [["dim", "項目"], ["gms", "売上"], ["ad_cost", "広告費"], ["impressions", "IMP"], ["clicks", "クリック"], ["ctr", "CTR"], ["cv", "CV"], ["roas", "ROAS"]];
 // 外部漏出 = 商品別広告のうちキーワード経由ではない部分（直接ページ閲覧・推薦・関連等）
