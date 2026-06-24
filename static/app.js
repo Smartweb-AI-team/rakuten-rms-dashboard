@@ -1946,6 +1946,22 @@ $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/
   if (delTo) attachPicker(delTo, "day");
   const btn = document.getElementById("btn-data-delete");
   if (!btn) return;
+
+  // 어드민 토글: 본인이 admin 이면 「他のショップ」 옵션 행 표시
+  const adminRow = document.getElementById("del-admin-row");
+  const otherShopChk = document.getElementById("del-other-shop");
+  const shopWrap = document.getElementById("del-shop-wrap");
+  function _refreshAdminUI() {
+    const me = (typeof _fbCurrentUser === "function") ? _fbCurrentUser() : null;
+    if (adminRow) adminRow.classList.toggle("hidden", !me?.isAdmin);
+  }
+  // AUTH_CFG 로드 후 한번 + 주기적 갱신
+  setTimeout(_refreshAdminUI, 1500);
+  setInterval(_refreshAdminUI, 5000);
+  if (otherShopChk) otherShopChk.onchange = () => {
+    if (shopWrap) shopWrap.classList.toggle("hidden", !otherShopChk.checked);
+  };
+
   btn.onclick = async () => {
     const from = delFrom?.value?.trim();
     const to = delTo?.value?.trim();
@@ -1953,9 +1969,16 @@ $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/
     const result = document.getElementById("del-result");
     if (!from || !to) { result.textContent = "⚠ 開始日 / 終了日 を選択してください"; result.style.color = "#bf0000"; return; }
     const productLabel = product || "全広告";
+    // 어드민 + 「他のショップ」 옵션 ON 시 명시적 shop_id
+    let overrideShop = "";
+    if (otherShopChk?.checked) {
+      overrideShop = (document.getElementById("del-shop-id")?.value || "").trim();
+      if (!overrideShop) { result.textContent = "⚠ 削除対象の shop_id を入力してください"; result.style.color = "#bf0000"; return; }
+    }
+    const targetShop = overrideShop || RAKUTEN_SHOP_ID || '(現在の店舗)';
     if (!confirm(
       `本当に削除しますか？\n\n` +
-      `ショップ: ${RAKUTEN_SHOP_ID || '(現在の店舗)'}\n` +
+      `ショップ: ${targetShop}\n` +
       `期間: ${from} 〜 ${to}\n` +
       `広告: ${productLabel}\n\n` +
       `※ この操作は元に戻せません。削除後 再取得が必要です。`
@@ -1963,10 +1986,11 @@ $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/
     btn.disabled = true;
     result.textContent = "削除中…"; result.style.color = "#5a6173";
     try {
-      const r = await api.post("/api/data/delete", { from, to, product: product || null, include_raw: true });
-      result.innerHTML = `✅ 削除完了 — performance: <b>${r.deleted_performance}</b>行 / raw: <b>${r.deleted_raw}</b>行 (期間 ${r.from} 〜 ${r.to} / ${r.product})`;
+      const body = { from, to, product: product || null, include_raw: true };
+      if (overrideShop) body.shop_id = overrideShop;  // 어드민 명시 지정
+      const r = await api.post("/api/data/delete", body);
+      result.innerHTML = `✅ 削除完了 — shop <b>${r.shop_id}</b> — performance: <b>${r.deleted_performance}</b>行 / raw: <b>${r.deleted_raw}</b>行 (期間 ${r.from} 〜 ${r.to} / ${r.product})`;
       result.style.color = "#0c7a3e";
-      // 화면 갱신
       loadStatus(); loadCoverage();
     } catch (e) {
       result.textContent = "❌ 削除失敗: " + e.message;
@@ -1974,6 +1998,56 @@ $("#btn-backfill-cancel").onclick = async () => { await api.post("/api/backfill/
     } finally { btn.disabled = false; }
   };
 })();
+
+// 전체 합계 메트릭 띠 — KPI 응답 (또는 합계 객체) 받아서 카드 띠 렌더
+// opts: {target: '#prod-totals'} 또는 셀렉터 문자열
+function renderTotalsBar(target, kpisResp, opts = {}) {
+  const wrap = typeof target === "string" ? document.querySelector(target) : target;
+  if (!wrap) return;
+  const cur = (kpisResp && kpisResp.current) || kpisResp || null;
+  if (!cur || (!cur.gms && !cur.ad_cost && !cur.clicks)) {
+    wrap.innerHTML = `<div class="totals-empty">この期間 / 条件のデータがありません</div>`;
+    return;
+  }
+  // 비율 계산 (합계 기반)
+  const ctr = (cur.impressions && cur.clicks != null) ? cur.clicks / cur.impressions : (cur.ctr ?? null);
+  const cvr = (cur.clicks && cur.cv != null) ? cur.cv / cur.clicks : (cur.cvr ?? null);
+  const roas = (cur.ad_cost && cur.gms != null) ? cur.gms / cur.ad_cost : (cur.roas ?? null);
+  const cpc = (cur.clicks && cur.ad_cost != null) ? cur.ad_cost / cur.clicks : (cur.cpc ?? null);
+  const cpa = (cur.cv && cur.ad_cost != null) ? cur.ad_cost / cur.cv : (cur.cpa ?? null);
+
+  const CARDS = [
+    { cls: "t-money",   l: "売上 (GMS)", v: fmtMoney(cur.gms),                    sub: opts.label || "" },
+    { cls: "t-money",   l: "広告費",     v: fmtMoney(cur.ad_cost),                sub: "" },
+    { cls: "t-traffic", l: "IMP",       v: fmt(cur.impressions),                 sub: "" },
+    { cls: "t-traffic", l: "クリック",   v: fmt(cur.clicks),                      sub: "" },
+    { cls: "t-cv",      l: "CV",        v: fmt(cur.cv),                          sub: "" },
+    { cls: "t-ratio",   l: "ROAS",      v: roas != null ? fmtRoas(roas) : "—",   sub: "" },
+    { cls: "t-ratio",   l: "CTR",       v: ctr != null ? fmtPct(ctr) : "—",      sub: "" },
+    { cls: "t-ratio",   l: "CVR",       v: cvr != null ? fmtPct(cvr) : "—",      sub: "" },
+    { cls: "t-ratio",   l: "CPC",       v: cpc != null ? fmtMoney(cpc) : "—",    sub: "" },
+    { cls: "t-ratio",   l: "CPA",       v: cpa != null ? fmtMoney(cpa) : "—",    sub: "" },
+  ];
+  wrap.innerHTML = `<div class="totals-bar">${CARDS.map(c => `
+    <div class="totals-card ${c.cls}">
+      <span class="tc-bar"></span>
+      <div class="tc-l">${escapeHtml(c.l)}</div>
+      <div class="tc-v">${c.v}</div>
+      ${c.sub ? `<div class="tc-sub">${escapeHtml(c.sub)}</div>` : ""}
+    </div>`).join("")}</div>`;
+}
+
+// 商品×キーワード 各 サブ 탭의 합계 띠 로드
+async function loadAnalysisTotals(target, params, label) {
+  try {
+    const qs = new URLSearchParams(params).toString();
+    const kpis = await api.get(`/api/kpis?${qs}`);
+    renderTotalsBar(target, kpis, { label });
+  } catch (e) {
+    const wrap = typeof target === "string" ? document.querySelector(target) : target;
+    if (wrap) wrap.innerHTML = `<div class="totals-empty">合計の取得に失敗しました</div>`;
+  }
+}
 
 // 結果 박스 HTML 생성 (데이터 취득 박스 + 백필 완료 모달 공통).
 // 디자인: Modern SaaS 풍 — Hero 절제, 6개 카드 한 줄 평등 배치, 그룹 칩 라벨, 0 카드는 회색 톤.
@@ -2787,6 +2861,10 @@ function _skelTable(rows = 8, cols = 8) {
 }
 async function loadProdBoard() {
   const f = readFilters("#prod-filters"), win = f.window || "720h", seg = f.segment || "all", kind = $("#prod-kind").value;
+  // 전체 합계 띠 (선택된 종류에 맞춰서)
+  loadAnalysisTotals("#prod-totals", {
+    from: f.from, to: f.to, product: f.product, window: win, segment: seg, selection_type: kind,
+  }, kind === "4" ? "キーワード" : "商品(SKU)").catch(() => {});
   // 로딩 스켈레톤
   if ($("#prod-board")) $("#prod-board").innerHTML = _skelTable(8, 8);
   if ($("#prod-cap")) $("#prod-cap").innerHTML = `<span class="skel skel-line" style="width:280px"></span>`;
@@ -2980,6 +3058,10 @@ function loadMatrixView() {
 }
 async function loadMatrix() {
   const f = readFilters("#mx-filters"), win = f.window || "720h", seg = f.segment || "all";
+  // 전체 합계 띠 — 매트릭스는 商品×KW 통합이라 전체광고(sel=1) 합계
+  loadAnalysisTotals("#mx-totals", {
+    from: f.from, to: f.to, product: f.product, window: win, segment: seg, selection_type: 1,
+  }, "商品×キーワード 全体").catch(() => {});
   // 로딩 스켈레톤 — 매트릭스 카드 5개
   $("#mx-cap").innerHTML = `<span class="skel skel-line skel-inline" style="width:340px;height:14px"></span>`;
   $("#mx-list").innerHTML = Array(5).fill(0).map(() =>
@@ -3078,6 +3160,16 @@ function renderMatrix() {
 let cmpA = null, cmpB = null, cmpMetric = "ad_cost";
 function loadCompareView() {
   if (!$("#cmp-filters").dataset.built) { buildCompareFilters(); $("#cmp-filters").dataset.built = "1"; }
+  // 비교 화면용 합계 띠 (filter 의 a기간 = STATUS 기본)
+  setTimeout(() => {
+    const f = readFilters("#cmp-filters") || {};
+    const fr = f.aFrom || f.from, to = f.aTo || f.to;
+    if (!fr || !to) return;
+    loadAnalysisTotals("#cmp-totals", {
+      from: fr, to, product: f.product || "RPP",
+      window: f.window || "720h", segment: f.segment || "all", selection_type: 1,
+    }, "期間A 全体").catch(() => {});
+  }, 200);
 }
 let cmpTargets = [], cmpTarget = null, cmpQ = "";
 function buildCompareFilters() {

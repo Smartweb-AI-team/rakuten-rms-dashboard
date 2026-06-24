@@ -126,10 +126,10 @@
       <div class="card">
         <h3>🗑 データ削除 <span class="muted small">間違って取得したデータをリセット</span></h3>
         <p class="muted small">指定した期間の取得済みデータを <b>現在のショップ</b> から削除します。削除後、再取得すると最新データに置き換わります。</p>
-        <div class="field-row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
-          <label>開始日 <input type="text" id="del-from" placeholder="YYYY-MM-DD" style="width:140px"></label>
-          <label>終了日 <input type="text" id="del-to" placeholder="YYYY-MM-DD" style="width:140px"></label>
-          <label>広告
+        <div class="field-row del-row" style="margin-top:8px">
+          <label class="inline-label">開始日 <input type="text" id="del-from" placeholder="YYYY-MM-DD" style="width:140px"></label>
+          <label class="inline-label">終了日 <input type="text" id="del-to" placeholder="YYYY-MM-DD" style="width:140px"></label>
+          <label class="inline-label">広告
             <select id="del-product" style="padding:6px 10px">
               <option value="">全広告</option>
               <option value="RPP">RPP のみ</option>
@@ -138,6 +138,13 @@
             </select>
           </label>
           <button class="ghost-btn fb-danger" id="btn-data-delete" style="background:#fef2f2;border-color:#fecaca;color:#bf0000;font-weight:700">🗑 この期間のデータを削除</button>
+        </div>
+        <div id="del-admin-row" class="field-row hidden" style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)">
+          <label class="inline-label" style="font-size:11px;color:#7d8590">
+            <input type="checkbox" id="del-other-shop">
+            <span><b>他のショップ</b> のデータを削除 <span class="muted">(管理者のみ)</span></span>
+          </label>
+          <label class="inline-label hidden" id="del-shop-wrap">対象 shop_id <input type="text" id="del-shop-id" placeholder="例 195701" style="width:140px"></label>
         </div>
         <div id="del-result" class="small muted" style="margin-top:8px;min-height:18px"></div>
       </div>
@@ -240,6 +247,7 @@
     <!-- ============ (旧) 商品分析 — 統合ビューにDOM移植用 ============ -->
     <section class="view hidden" id="view-product">
       <div class="filters card" id="prod-filters"></div>
+      <div id="prod-totals"></div>
       <div class="card">
         <div class="card-head"><h3>商品・キーワード <span class="muted small">行をクリックで選択（複数可）→ 下で推移・比較</span></h3>
           <div class="tbl-tools">
@@ -288,6 +296,7 @@
     <!-- ============ 商品×キーワード マトリクス ============ -->
     <section class="view hidden" id="view-matrix">
       <div class="filters card" id="mx-filters"></div>
+      <div id="mx-totals"></div>
       <div class="card">
         <div class="card-head">
           <h3>商品ｘキーワード <span class="muted small" id="mx-cap"></span></h3>
@@ -302,6 +311,7 @@
     <!-- ============ 期間比較ビュー ============ -->
     <section class="view hidden" id="view-compare">
       <div class="filters card" id="cmp-filters"></div>
+      <div id="cmp-totals"></div>
       <div class="card hidden" id="cmp-picker-card">
         <div class="card-head">
           <h3 id="cmp-picker-title">対象を選択 <span class="muted small">行をクリックで選択（1件）</span></h3>

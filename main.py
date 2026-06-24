@@ -947,11 +947,22 @@ def api_jobs(_u: dict = Depends(auth_required)):
 
 
 @app.post("/api/data/delete")
-async def api_data_delete(req: Request, _u: dict = Depends(auth_required)):
+async def api_data_delete(req: Request, user: dict = Depends(auth_required)):
     """잘못 받은 데이터 삭제 (shop_id + 기간 + 옵션 product).
-    body: {from: 'YYYY-MM-DD', to: 'YYYY-MM-DD', product?: 'RPP'|'TDA'|'CPA', include_raw?: bool}"""
+    body: {from, to, product?, include_raw?, shop_id?}
+    - shop_id 가 본인 楽天 shop 과 다르면 → 어드민(ADMIN_EMAIL) 만 허용."""
     body = await req.json()
-    shop = _shop_id_from(req, body.get("shop_id", ""))
+    body_shop = (body.get("shop_id") or "").strip()
+    qs_shop = (req.query_params.get("shop_id") or "").strip()
+    # 명시적으로 body 에 shop_id 가 주어졌고 query 와 다르면 = 다른 shop 삭제 요청
+    if body_shop and qs_shop and body_shop != qs_shop:
+        admin_email = (os.environ.get("ADMIN_EMAIL", "") or "").strip().lower()
+        user_email = ((user or {}).get("email") or "").strip().lower()
+        if not admin_email or user_email != admin_email:
+            raise HTTPException(403, f"他のショップのデータ削除は管理者のみです (ADMIN_EMAIL={admin_email or '未設定'})")
+        shop = body_shop  # 어드민 명시 지정 → query 무시
+    else:
+        shop = _shop_id_from(req, body_shop)
     if not shop:
         raise HTTPException(400, "shop_id 必須")
     frm = body.get("from") or ""

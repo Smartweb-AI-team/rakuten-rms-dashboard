@@ -132,6 +132,31 @@ code{background:var(--line2);padding:1px 6px;border-radius:6px;font-size:12.5px}
 .pill.err{background:var(--bad-soft);color:var(--bad)}
 .pill.warn{background:#fef3c7;color:#92400e;border-color:#fde68a;font-weight:700}
 .pill.warn:hover{background:#fde68a}
+
+/* inline 라벨 (왼쪽 텍스트 + 오른쪽 입력) */
+.inline-label{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:#475569;font-weight:600;white-space:nowrap}
+.inline-label input[type=text],.inline-label select{font-weight:400;color:#15181e}
+.field-row.del-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+
+/* 商品ｘキーワード 탭: 필터 카드와 결과 카드 사이 여백 */
+#sub-board > .filters.card,#sub-matrix > .filters.card,#sub-compare > .filters.card,
+#view-product > .filters.card,#view-matrix > .filters.card,#view-compare > .filters.card,
+#view-analysis .filters.card{margin-bottom:16px}
+#analysis-tabs{margin-bottom:14px}
+#sub-board > .card + .card,#sub-matrix > .card + .card,#sub-compare > .card + .card{margin-top:14px}
+
+/* 전체 합계 메트릭 띠 */
+.totals-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;padding:16px 18px;background:linear-gradient(180deg,#fafbfc 0%,#ffffff 100%);border:1px solid #eef0f2;border-radius:12px;margin-bottom:16px}
+.totals-card{background:#fff;border:1px solid #eef0f2;border-radius:10px;padding:11px 12px;display:flex;flex-direction:column;gap:5px;position:relative;overflow:hidden;min-width:0}
+.totals-card .tc-bar{position:absolute;top:0;left:0;width:3px;height:100%;background:#cbd5e1}
+.totals-card.t-money .tc-bar{background:#bf0000}
+.totals-card.t-traffic .tc-bar{background:#1d4ed8}
+.totals-card.t-cv .tc-bar{background:#0c7a3e}
+.totals-card.t-ratio .tc-bar{background:#7c3aed}
+.totals-card .tc-l{font-size:10px;font-weight:700;color:#7d8590;letter-spacing:.3px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.totals-card .tc-v{font-size:18px;font-weight:800;color:#15181e;line-height:1.1;font-variant-numeric:tabular-nums;letter-spacing:-.4px}
+.totals-card .tc-sub{font-size:10px;color:#94a3b8;font-weight:500}
+.totals-empty{padding:14px 18px;background:#fafbfc;border:1px dashed #eef0f2;border-radius:12px;margin-bottom:16px;color:#94a3b8;font-size:12px;text-align:center}
 .view{padding:26px 28px;display:flex;flex-direction:column;gap:20px;animation:fade .25s ease}
 @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 
